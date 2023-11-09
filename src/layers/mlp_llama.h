@@ -86,6 +86,58 @@ public:
         }
     }
 
+    void setQWeights(DecoderContext *ctx, std::vector<void *> &params, bool trans = true) {
+        int hiddenSize = ctx->hiddenSize;
+        int imSize = ctx->intermediateSize;
+
+        // Refer to CommonDecoder for parameters order
+        const int8_t *gateW = (const int8_t *)params[0];
+        const float *gateZ = (const float *)params[1];
+        const float *gateS = (const float *)params[2];
+        const int8_t *upW = (const int8_t *)params[4];
+        const float *upZ = (const float *)params[5];
+        const float *upS = (const float *)params[6];
+        const float *normW = (const float *)params[8];
+        const int8_t *downW = (const int8_t *)params[10];
+        const float *downZ = (const float *)params[11];
+        const float *downS = (const float *)params[12];
+
+        REQUIRES(ctx->actType == DecoderContext::SILU, "unsupported activation.");
+
+        // Vertically split the gate weight and up weight
+        hpj::Matrix<WeiT> quantizedGateWeight, quantizedUpWeight, quantizedDownWeight;
+
+        MMHelper::convertQWeight(
+                ctx, trans, hiddenSize, imSize, gateW, gateZ, gateS, true, quantizedGateWeight, gateWeightScale, gateWeightZero);
+        MMHelper::packWeight(trans, quantizedGateWeight, gateWeight);
+
+        MMHelper::convertQWeight(
+                ctx, trans, hiddenSize, imSize, upW, upZ, upS, true, quantizedUpWeight, upWeightScale, upWeightZero);
+        MMHelper::packWeight(trans, quantizedUpWeight, upWeight);
+
+        // Horizontally split the down weight
+        MMHelper::convertQWeight(
+                ctx, trans, imSize, hiddenSize, downW, downZ, downS, false, quantizedDownWeight, downWeightScale, downWeightZero);
+        MMHelper::packWeight(trans, quantizedDownWeight, downWeight);
+
+#ifdef DEBUG
+        dbg.debugPrint("quantizedGateWeight:\n");
+        dbg.dumpMatrix(quantizedGateWeight);
+
+        dbg.debugPrint("quantizedUpWeight:\n");
+        dbg.dumpMatrix(quantizedUpWeight);
+
+        dbg.debugPrint("quantizedDownWeight:\n");
+        dbg.dumpMatrix(quantizedDownWeight);
+#endif
+
+        // LlamaRMSNorm
+        if (normW) {
+            normWeight.Resize(hiddenSize);
+            memcpy(normWeight.Data(), normW, sizeof(float) * hiddenSize);
+        }
+    }
+
 #ifdef DEBUG
     void setDebugger(const Debugger &debugger) {
         this->dbg = debugger;

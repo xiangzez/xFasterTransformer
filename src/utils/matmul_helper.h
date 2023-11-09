@@ -272,6 +272,74 @@ public:
     }
 
     template <typename WeiT>
+    static void convertQWeight(bool trans, int rows, int cols, const int8_t *qweight, const float *zeros, const float *scales, int numSplit, int splitIdx,
+            bool verticalSplit, hpj::Matrix<WeiT> &quantizedWeight, hpj::Vector<float> &scaleWeight, hpj::Vector<float> &zeroWeight) {
+        if constexpr (!std::is_same_v<WeiT, int8_t>) {
+            return;
+        }
+
+        if (verticalSplit) {
+            int colsPerSplit = cols / numSplit;
+            if (trans) {
+                quantizedWeight.Resize(colsPerSplit, rows);
+                const int8_t *base = qweight + quantizedWeight.Rows() * quantizedWeight.Stride() * splitIdx;
+#pragma omp parallel for
+                for (int i = 0; i < quantizedWeight.Rows(); ++i) {
+                    memcpy(quantizedWeight.Data() + i * quantizedWeight.Stride(), base + i * rows,
+                            quantizedWeight.Cols());
+                }
+            } else {
+                quantizedWeight.Resize(rows, colsPerSplit);
+#pragma omp parallel for
+                for (int i = 0; i < quantizedWeight.Rows(); ++i) {
+                    memcpy(quantizedWeight.Data() + i * quantizedWeight.Stride(),
+                            qweight + i * cols + quantizedWeight.Cols() * splitIdx, quantizedWeight.Cols());
+                }
+            }
+            scaleWeight.Resize(colsPerSplit);
+            zeroWeight.Resize(colsPerSplit);
+            memcpy(scaleWeight.Data(), scales + colsPerSplit * splitIdx, colsPerSplit * sizeof(float));
+            memcpy(zeroWeight.Data(), zeros + colsPerSplit * splitIdx, colsPerSplit * sizeof(float));
+
+        } else {
+            int rowsPerSplit = rows / numSplit;
+            if (trans) {
+                quantizedWeight.Resize(cols, rowsPerSplit);
+#pragma omp parallel for
+                for (int i = 0; i < quantizedWeight.Rows(); ++i) {
+                    memcpy(quantizedWeight.Data() + i * quantizedWeight.Stride(),
+                            qweight + i * rows + quantizedWeight.Cols() * splitIdx, quantizedWeight.Cols());
+                }
+            } else {
+                quantizedWeight.Resize(rowsPerSplit, cols);
+                const int8_t *base = qweight + quantizedWeight.Rows() * quantizedWeight.Stride() * splitIdx;
+#pragma omp parallel for
+                for (int i = 0; i < quantizedWeight.Rows(); ++i) {
+                    memcpy(quantizedWeight.Data() + i * quantizedWeight.Stride(), base + i * cols,
+                            quantizedWeight.Cols());
+                }
+            }
+            scaleWeight.Resize(cols);
+            zeroWeight.Resize(cols);
+            memcpy(scaleWeight.Data(), scales, cols * sizeof(float));
+            memcpy(zeroWeight.Data(), zeros, cols * sizeof(float));
+        }
+    }
+
+    template <typename WeiT>
+    static void convertQWeight(bool trans, int rows, int cols, const int8_t *qweight, const float *zeros, const float *scales, hpj::Matrix<WeiT> &quantizedWeight,
+            hpj::Vector<float> &scaleWeight, hpj::Vector<float> &zeroWeight) {
+        convertQWeight(trans, rows, cols, qweight, zeros, scales, 1, 0, true, quantizedWeight, scaleWeight, zeroWeight);
+    }
+
+    template <typename WeiT>
+    static void convertQWeight(DecoderContext *ctx, bool trans, int rows, int cols, const int8_t *qweight, const float *zeros, const float* scales, bool verticalSplit,
+            hpj::Matrix<WeiT> &quantizedWeight, hpj::Vector<float> &scaleWeight, hpj::Vector<float> &zeroWeight) {
+        convertQWeight(trans, rows, cols, qweight, zeros, scales, ctx->numSplit, ctx->splitIdx, verticalSplit, quantizedWeight, scaleWeight,
+                zeroWeight);
+    }
+
+    template <typename WeiT>
     static void packWeight(bool trans, hpj::Matrix<WeiT> &src, hpj::Matrix<WeiT> &weight) {
         int K = trans ? src.Cols() : src.Rows();
         int N = trans ? src.Rows() : src.Cols();

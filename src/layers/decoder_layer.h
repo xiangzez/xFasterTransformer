@@ -74,6 +74,40 @@ public:
         mlp.setWeights(ctx, mlpParams, trans);
     }
 
+    void setQWeights(DecoderContext *ctx, std::vector<void *> &params, bool trans = true) {
+        const int8_t *queryQWeight = (const int8_t *)params[0];
+        const float *queryZeros = (const float *)params[1];
+        const float *queryScales = (const float *)params[2];
+        const float *queryBias = (const float *)params[3];
+
+        const int8_t *keyQWeight = (const int8_t *)params[4];
+        const float *keyZeros = (const float *)params[5];
+        const float *keyScales = (const float *)params[6];
+        const float *keyBias = (const float *)params[7];
+
+        const int8_t *valueQWeight = (const int8_t *)params[8];
+        const float *valueZeros = (const float *)params[9];
+        const float *valueScales = (const float *)params[10];
+        const float *valueBias = (const float *)params[11];
+
+        const int8_t *attnOutQWeight = (const int8_t *)params[12];
+        const float *attnOutZeros = (const float *)params[13];
+        const float *attnOutScales = (const float *)params[14];
+        const float *attnOutBias = (const float *)params[15];
+
+        const float *gamma1 = (const float *)params[16];
+        const float *beta1 = (const float *)params[17];
+
+        attn.setQWeights(ctx, queryQWeight, queryZeros, queryScales, queryBias,
+                keyQWeight, keyZeros, keyScales, keyBias,
+                valueQWeight, valueZeros, valueScales, valueBias,
+                attnOutQWeight, attnOutZeros, attnOutScales, attnOutBias,
+                gamma1, beta1, trans);
+
+        std::vector<void *> mlpParams(params.begin() + 18, params.end());
+        mlp.setQWeights(ctx, mlpParams, trans);
+    }
+
     template <typename KVCacheT>
     void forwardAttention(DecoderContext *ctx, float *input, float *output, const float *attnMask, KVCacheTensor<KVCacheT> &presentKey,
             KVCacheTensor<KVCacheT> &presentValue, int inputSeqLen, int pastSeqLen, bool useSelfAttn, bool doLnBefore,

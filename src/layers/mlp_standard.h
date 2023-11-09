@@ -77,6 +77,55 @@ public:
         }
     }
 
+    void setQWeights(DecoderContext *ctx, std::vector<void *> &params, bool trans = true) {
+        int hiddenSize = ctx->hiddenSize;
+        int intermediateSize = ctx->intermediateSize;
+
+        const int8_t *_imWeight = (const int8_t *)params[0];
+        const float *_imZeros = (const float *)params[0];
+        const float *_imScales = (const float *)params[0];
+        const float *_imBias = (const float *)params[1];
+        const int8_t *_outputWeight = (const int8_t *)params[2];
+        const float *_outputZeros = (const float *)params[2];
+        const float *_outputScales = (const float *)params[2];
+        const float *_outputBias = (const float *)params[3];
+        const float *_gamma2 = (const float *)params[4];
+        const float *_beta2 = (const float *)params[5];
+
+        // Vertically split intermediate(FC1) weight
+        hpj::Matrix<WeiT> quantizedIntermediateWeight;
+        MMHelper::convertQWeight(ctx, trans, hiddenSize, intermediateSize, _imWeight, _imZeros, _imScales, true, quantizedIntermediateWeight,
+                intermediateWeightScale, intermediateWeightZero);
+        MMHelper::packWeight(trans, quantizedIntermediateWeight, intermediateWeight);
+
+        // Intermediate bias
+        int colsPerSplit = intermediateSize / ctx->numSplit;
+        intermediateBias.Resize(colsPerSplit);
+        memcpy(intermediateBias.Data(), _imBias + colsPerSplit * ctx->splitIdx, sizeof(float) * colsPerSplit);
+
+        // Horizontally split the output(FC2) weight
+        hpj::Matrix<WeiT> quantizedOutputWeight;
+        MMHelper::convertQWeight(ctx, trans, intermediateSize, hiddenSize, _outputWeight, _outputZeros, _outputScales, false, quantizedOutputWeight,
+                outputWeightScale, outputWeightZero);
+        MMHelper::packWeight(trans, quantizedOutputWeight, outputWeight);
+
+        // Output bias
+        outputBias.Resize(hiddenSize);
+        if (ctx->splitIdx == 0) {
+            memcpy(outputBias.Data(), _outputBias, sizeof(float) * hiddenSize);
+        } else { // For other splits, set bias to 0, to avoid duplicated calculation
+            memset(outputBias.Data(), 0, sizeof(float) * hiddenSize);
+        }
+
+        // gamma and beta for layer norm
+        if (_gamma2 && _beta2) {
+            gamma2.Resize(hiddenSize);
+            beta2.Resize(hiddenSize);
+            memcpy(gamma2.Data(), _gamma2, sizeof(float) * hiddenSize);
+            memcpy(beta2.Data(), _beta2, sizeof(float) * hiddenSize);
+        }
+    }
+
 #ifdef DEBUG
     void setDebugger(const Debugger &debugger) {
         this->dbg = debugger;
