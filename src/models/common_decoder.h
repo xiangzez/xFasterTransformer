@@ -412,14 +412,14 @@ protected:
             // printf("hiddenSize=%d, qkvSize=%d\n", hiddenSize, qkvSize);
             loadWeight(modelPath + "/model.layers." + std::to_string(layerIdx) + ".attention.query_key_value.qweight.0.bin",
                     qkvQWeight, hiddenSize * qkvSize, WDataType::INT8);
-            loadWeight(modelPath + "/model.layers." + std::to_string(layerIdx) + ".attention.query_key_value.qzeros.0.bin",
+            loadWeight(modelPath + "/model.layers." + std::to_string(layerIdx) + ".attention.query_key_value.zeros.0.bin",
                     qkvZeros, qkvSize, WDataType::FP32);
             loadWeight(modelPath + "/model.layers." + std::to_string(layerIdx) + ".attention.query_key_value.scales.0.bin",
                     qkvScales, qkvSize, WDataType::FP32);
 
             loadWeight(modelPath + "/model.layers." + std::to_string(layerIdx) + ".attention.dense.qweight.0.bin",
                     attnOutQWeight, hiddenSize * hiddenSize, WDataType::INT8);
-            loadWeight(modelPath + "/model.layers." + std::to_string(layerIdx) + ".attention.dense.qzeros.0.bin",
+            loadWeight(modelPath + "/model.layers." + std::to_string(layerIdx) + ".attention.dense.zeros.0.bin",
                     attnOutZeros, hiddenSize, WDataType::FP32);
             loadWeight(modelPath + "/model.layers." + std::to_string(layerIdx) + ".attention.dense.scales.0.bin",
                     attnOutScales, hiddenSize, WDataType::FP32);
@@ -428,14 +428,14 @@ protected:
             if (fileExists(modelPath + "/model.layers." + std::to_string(layerIdx) + ".mlp.dense_h_to_4h.qweight.0.bin")) {
                 loadWeight(modelPath + "/model.layers." + std::to_string(layerIdx) + ".mlp.dense_h_to_4h.qweight.0.bin",
                         fc1QWeight, hiddenSize * imSize * mlpFactor, WDataType::INT8);
-                loadWeight(modelPath + "/model.layers." + std::to_string(layerIdx) + ".mlp.dense_h_to_4h.qzeros.0.bin",
+                loadWeight(modelPath + "/model.layers." + std::to_string(layerIdx) + ".mlp.dense_h_to_4h.zeros.0.bin",
                         fc1Zeros, imSize * mlpFactor, WDataType::FP32);
                 loadWeight(modelPath + "/model.layers." + std::to_string(layerIdx) + ".mlp.dense_h_to_4h.scales.0.bin",
                         fc1Scales, imSize * mlpFactor, WDataType::FP32);
 
                 loadWeight(modelPath + "/model.layers." + std::to_string(layerIdx) + ".mlp.dense_4h_to_h.qweight.0.bin",
                         fc2QWeight, hiddenSize * imSize, WDataType::INT8);
-                loadWeight(modelPath + "/model.layers." + std::to_string(layerIdx) + ".mlp.dense_4h_to_h.qzeros.0.bin",
+                loadWeight(modelPath + "/model.layers." + std::to_string(layerIdx) + ".mlp.dense_4h_to_h.zeros.0.bin",
                         fc2Zeros, hiddenSize, WDataType::FP32);
                 loadWeight(modelPath + "/model.layers." + std::to_string(layerIdx) + ".mlp.dense_4h_to_h.scales.0.bin",
                         fc2Scales, hiddenSize, WDataType::FP32);
@@ -448,21 +448,21 @@ protected:
 
                 loadWeight(modelPath + "/model.layers." + std::to_string(layerIdx) + ".mlp.gate_proj.qweight.0.bin",
                         fc1QWeight, hiddenSize * imSize * mlpFactor, WDataType::INT8);
-                loadWeight(modelPath + "/model.layers." + std::to_string(layerIdx) + ".mlp.gate_proj.qzeros.0.bin",
+                loadWeight(modelPath + "/model.layers." + std::to_string(layerIdx) + ".mlp.gate_proj.zeros.0.bin",
                         fc1Zeros, imSize * mlpFactor, WDataType::FP32);
                 loadWeight(modelPath + "/model.layers." + std::to_string(layerIdx) + ".mlp.gate_proj.scales.0.bin",
                         fc1Scales, imSize * mlpFactor, WDataType::FP32);
 
                 loadWeight(modelPath + "/model.layers." + std::to_string(layerIdx) + ".mlp.up_proj.qweight.0.bin", fc2QWeight,
                         hiddenSize * imSize, WDataType::INT8);
-                loadWeight(modelPath + "/model.layers." + std::to_string(layerIdx) + ".mlp.up_proj.qzeros.0.bin", fc2Zeros,
+                loadWeight(modelPath + "/model.layers." + std::to_string(layerIdx) + ".mlp.up_proj.zeros.0.bin", fc2Zeros,
                         imSize, WDataType::FP32);
                 loadWeight(modelPath + "/model.layers." + std::to_string(layerIdx) + ".mlp.up_proj.scales.0.bin", fc2Scales,
                         imSize, WDataType::FP32);
 
                 loadWeight(modelPath + "/model.layers." + std::to_string(layerIdx) + ".mlp.down_proj.qweight.0.bin",
                         fc3QWeight, hiddenSize * imSize, WDataType::INT8);
-                loadWeight(modelPath + "/model.layers." + std::to_string(layerIdx) + ".mlp.down_proj.qzeros.0.bin",
+                loadWeight(modelPath + "/model.layers." + std::to_string(layerIdx) + ".mlp.down_proj.zeros.0.bin",
                         fc3Zeros, hiddenSize, WDataType::FP32);
                 loadWeight(modelPath + "/model.layers." + std::to_string(layerIdx) + ".mlp.down_proj.scales.0.bin",
                         fc3Scales, hiddenSize, WDataType::FP32);

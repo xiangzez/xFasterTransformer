@@ -58,7 +58,7 @@ def split_and_convert_process(i, saved_dir, factor, key, args, val, old_name, dt
         if i == 0:
             save_val(val, key)
 
-    elif "qweight" in key or "qzeros" in key or "scales" in key:
+    elif "qweight" in key or "zeros" in key or "scales" in key:
         save_val(val, key, 0)
     else:
         print("[ERROR] cannot find key '{}'".format(key))
@@ -167,20 +167,20 @@ def split_and_convert(args):
     ft_model_name_pattern = [
         "input_layernorm.weight",
         "attention.query_key_value.qweight",
-        "attention.query_key_value.qzeros",
+        "attention.query_key_value.zeros",
         "attention.query_key_value.scales",
         "attention.dense.qweight",
-        "attention.dense.qzeros",
+        "attention.dense.zeros",
         "attention.dense.scales",
         "post_attention_layernorm.weight",
         "mlp.gate_proj.qweight",
-        "mlp.gate_proj.qzeros",
+        "mlp.gate_proj.zeros",
         "mlp.gate_proj.scales",
         "mlp.up_proj.qweight",
-        "mlp.up_proj.qzeros",
+        "mlp.up_proj.zeros",
         "mlp.up_proj.scales",
         "mlp.down_proj.qweight",
-        "mlp.down_proj.qzeros",
+        "mlp.down_proj.zeros",
         "mlp.down_proj.scales",
     ]
 
