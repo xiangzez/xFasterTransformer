@@ -199,17 +199,20 @@ def split_and_convert(args):
         elif "scales" in name:
             model_named_parameters[name] = param.float()
         elif "qzeros" in name:
-            param = torch.bitwise_right_shift(torch.unsqueeze(param, 2).expand(-1, -1, 32 // wbits), wf.unsqueeze(0)).to(torch.int16)
-            param = torch.bitwise_and(param, (2 ** wbits) - 1)
-            param = param + 1 - 128
-            param = torch.flatten(param)
-            model_named_parameters[name] = param.float()
+            qzeros = param
+            qzeros = torch.bitwise_right_shift(torch.unsqueeze(qzeros, 2).expand(-1, -1, 32 // wbits), wf.unsqueeze(0)).to(torch.int16)
+            qzeros = torch.bitwise_and(qzeros, (2 ** wbits) - 1)
+            qzeros = qzeros + 1 - 128 # uint to int
+            qzeros = torch.flatten(qzeros).float()
+            scales = state_dict["model." + name.replace("qzeros", "scales")].float()
+            zeros = - scales * qzeros
+            model_named_parameters[name] = zeros
         elif "qweight" in name:
             # qweight is not transposed
             param = torch.bitwise_right_shift(torch.unsqueeze(param, 1).expand(-1, 32 // wbits, -1), wf.unsqueeze(-1)).to(torch.int16)
             param = torch.bitwise_and(param, (2 ** wbits) - 1)
             param = param.reshape(-1, param.shape[2])
-            param = param - 128
+            param = param - 128 # uint to int
             model_named_parameters[name] = param.to(torch.int8)
         else:
             model_named_parameters[name] = param.permute(1, 0) if len(param.shape) == 2 else param
