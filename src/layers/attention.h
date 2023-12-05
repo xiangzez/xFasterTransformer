@@ -26,6 +26,7 @@
 #include "simple_mem_pool.h"
 #include "transformer_ctx.h"
 #include "transformer_util.h"
+#include "weight_util.h"
 
 // WeiT: weight data type
 // QKPO_CLS: class for post operation of query/key, it is generally the rotary embedding
@@ -67,7 +68,6 @@ public:
         int qResponsibleCols = (this->endQHead - this->startQHead) * headSize;
         int kvResponsibleCols = (this->endKVHead - this->startKVHead) * headSize;
         int responsibleCols = qResponsibleCols + 2 * kvResponsibleCols;
-        qkvWeight.Resize(hiddenSize, responsibleCols);
 
         float *concatBuf = (float *)malloc(hiddenSize * responsibleCols * sizeof(float));
         if (trans) {
@@ -91,57 +91,36 @@ public:
             }
         }
 
-        hpj::Matrix<WeiT> convertedqkvWeight;
-        MMHelper::convertWeight(
-                trans, hiddenSize, responsibleCols, concatBuf, convertedqkvWeight, qkvWeightScale, qkvWeightZero);
-        MMHelper::packWeight(trans, convertedqkvWeight, qkvWeight);
+        qkvWeight.set(trans, hiddenSize, responsibleCols, concatBuf);
 
         free(concatBuf);
 
 #ifdef DEBUG
-        dbg.debugPrint("attention qkv weight: [%d, %d] (%d)\n", convertedqkvWeight.Rows(), convertedqkvWeight.Cols(),
-                convertedqkvWeight.Stride());
-        dbg.dumpMatrix(convertedqkvWeight);
-        dbg.debugPrint(
-                "attention qkv packed weight: [%d, %d] (%d)\n", qkvWeight.Rows(), qkvWeight.Cols(), qkvWeight.Stride());
-        dbg.dumpMatrix(qkvWeight);
+        dbg.debugPrint("attention qkv packed weight: [%d, %d] (%d)\n", qkvWeight.weight.Rows(), qkvWeight.weight.Cols(),
+                qkvWeight.weight.Stride());
+        dbg.dumpMatrix(qkvWeight.weight);
 #endif
 
         // Merged bias
         if (queryBias && keyBias && valueBias) {
-            qkvBias.Resize(responsibleCols);
-            memcpy(qkvBias.Data(), queryBias + ctx->splitIdx * qResponsibleCols, sizeof(float) * qResponsibleCols);
-            memcpy(qkvBias.Data() + qResponsibleCols, keyBias + this->startKVHead * headSize,
+            qkvWeight.bias.Resize(responsibleCols);
+            memcpy(qkvWeight.bias.Data(), queryBias + ctx->splitIdx * qResponsibleCols,
+                    sizeof(float) * qResponsibleCols);
+            memcpy(qkvWeight.bias.Data() + qResponsibleCols, keyBias + this->startKVHead * headSize,
                     sizeof(float) * kvResponsibleCols);
-            memcpy(qkvBias.Data() + qResponsibleCols + kvResponsibleCols, valueBias + this->startKVHead * headSize,
-                    sizeof(float) * kvResponsibleCols);
+            memcpy(qkvWeight.bias.Data() + qResponsibleCols + kvResponsibleCols,
+                    valueBias + this->startKVHead * headSize, sizeof(float) * kvResponsibleCols);
         }
 
         // Weights for attention output
         // Horizontally split the weight, as the source (PyTorch weight) is transposed, thus looks like vertically
-        hpj::Matrix<WeiT> convertedWeight;
-        MMHelper::convertWeight(trans, hiddenSize, hiddenSize, attnOutWeight, this->startQHead * headSize,
-                qResponsibleCols, false, convertedWeight, attnOutputWeightScale, attnOutputWeightZero, true);
-        MMHelper::packWeight(trans, convertedWeight, attnOutputWeight);
+        attnOutputWeight.set(ctx, trans, hiddenSize, hiddenSize, attnOutWeight, attnOutBias, false);
 
 #ifdef DEBUG
-        dbg.debugPrint("attention output weight: [%d, %d] (%d)\n", convertedWeight.Rows(), convertedWeight.Cols(),
-                convertedWeight.Stride());
-        dbg.dumpMatrix(convertedWeight);
-        dbg.debugPrint("attention output packed weight: [%d, %d] (%d)\n", attnOutputWeight.Rows(),
-                attnOutputWeight.Cols(), attnOutputWeight.Stride());
-        dbg.dumpMatrix(attnOutputWeight);
+        dbg.debugPrint("attention output packed weight: [%d, %d] (%d)\n", attnOutputWeight.weight.Rows(),
+                attnOutputWeight.weight.Cols(), attnOutputWeight.weight.Stride());
+        dbg.dumpMatrix(attnOutputWeight.weight);
 #endif
-
-        // Attention output bias
-        if (attnOutBias) {
-            this->attnOutputBias.Resize(hiddenSize);
-            if (ctx->splitIdx == 0) {
-                memcpy(this->attnOutputBias.Data(), attnOutBias, sizeof(float) * hiddenSize);
-            } else { // For other splits, set bias to 0, to avoid duplicated calculation
-                memset(this->attnOutputBias.Data(), 0, sizeof(float) * hiddenSize);
-            }
-        }
 
         // LayerNorm
         this->norm.setWeight(gamma1, beta1, hiddenSize);
@@ -216,13 +195,13 @@ public:
 #ifdef DEBUG
         dbg.debugPrint("layer norm:\n");
         dbg.dumpMatrix(resultBuffer1);
-        dbg.debugPrint("qkvWeight [%d, %d]:\n", this->qkvWeight.Rows(), this->qkvWeight.Cols());
-        dbg.dumpMatrix(this->qkvWeight);
+        dbg.debugPrint("qkvWeight [%d, %d]:\n", this->qkvWeight.weight.Rows(), this->qkvWeight.weight.Cols());
+        dbg.dumpMatrix(this->qkvWeight.weight);
 #endif
 
         // Query, Key, Value computed together
         TimeLine t2("QKV.linear");
-        DecoderUtil::dense(resultBuffer1, qkvWeight, qkvWeightScale, qkvWeightZero, qkvBias, qkvGroupMatMul);
+        DecoderUtil::dense(resultBuffer1, qkvWeight, qkvGroupMatMul);
         t2.release();
 
         hpj::Matrix<float> query(qkvGroupMatMul, 0, inputBuffer.Rows(), 0, qCols);
@@ -293,22 +272,8 @@ public:
 
         TimeLine t5("Output");
         // Output/projection in attention, only add the input in the first split
-        if (ctx->splitIdx == 0) {
-            float gamma = getResidentialScale();
-
-            // denseWithScaledSum should be enough, but as the performance of denseWithScaledSum is not verified,
-            // So here still use denseWithSum
-            if (gamma == 1) {
-                DecoderUtil::denseWithSum(attnSplit, attnOutputWeight, attnOutputWeightScale, attnOutputWeightZero,
-                        attnOutputBias, inputBuffer, resultBuffer2);
-            } else {
-                DecoderUtil::denseWithScaledSum(attnSplit, attnOutputWeight, attnOutputWeightScale,
-                        attnOutputWeightZero, attnOutputBias, gamma, inputBuffer, resultBuffer2);
-            }
-        } else {
-            DecoderUtil::dense(attnSplit, attnOutputWeight, attnOutputWeightScale, attnOutputWeightZero, attnOutputBias,
-                    resultBuffer2);
-        }
+        float gamma = getResidentialScale();
+        DecoderUtil::dense(attnSplit, attnOutputWeight, gamma, inputBuffer, resultBuffer2, ctx->splitIdx);
         t5.release();
 
 #ifdef DEBUG
@@ -882,16 +847,9 @@ protected:
     }
 
     // query, key, value weighs
-    hpj::Matrix<WeiT> qkvWeight;
-    hpj::Vector<float> qkvWeightScale; // if weighs is int8
-    hpj::Vector<float> qkvWeightZero; // if weighs is int8
-    // query, key, value bias
-    hpj::Vector<float> qkvBias;
+    xft::LinearWeight<WeiT> qkvWeight;
 
-    hpj::Matrix<WeiT> attnOutputWeight;
-    hpj::Vector<float> attnOutputWeightScale; // if weighs is int8
-    hpj::Vector<float> attnOutputWeightZero; // if weighs is int8
-    hpj::Vector<float> attnOutputBias;
+    xft::LinearWeight<WeiT> attnOutputWeight;
 
     // Query/Key post op
     QKPO_CLS qkpo;

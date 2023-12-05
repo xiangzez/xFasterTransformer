@@ -28,12 +28,6 @@ public:
         this->outputSize = outDim;
         this->splitIdx = splitIdx;
         this->splits = splits;
-
-        this->bias = nullptr;
-    }
-
-    ~DistLinear() {
-        if (bias) free(bias);
     }
 
     // Note: the weight passed in is transposed
@@ -58,31 +52,25 @@ public:
 
         int K = inputSize;
         int N = this->splitSize;
-        weight.Resize(K, N);
-        scaleWeight.Resize(N);
-        zeroWeight.Resize(N);
-
-        hpj::Matrix<WeiT> quantizedWeight;
-        MMHelper::convertWeight(true, K, N, w + splitOffset * K, quantizedWeight, scaleWeight, zeroWeight);
-        MMHelper::packWeight(true, quantizedWeight, weight);
+        weight.set(true, K, N, w + splitOffset * K);
 
         // Copy Bias
         if (b) {
-            bias = (float *)aligned_alloc(64, N * sizeof(float));
-            memcpy(bias, b + splitOffset, N * sizeof(float));
+            weight.bias.Resize(N);
+            memcpy(weight.bias.Data(), b + splitOffset, N * sizeof(float));
         }
     }
 
     // input is in the shape of (batchSize, inputSize)
     void forward(const float *input, float *output, int batchSize) {
         TimeLine t("DistLinear.forward");
-        if (bias) {
-            MMHelper::compute_bias(false, batchSize, splitSize, inputSize, 1.0f, input, inputSize, weight.Data(),
-                    scaleWeight.Data(), zeroWeight.Data(), 0.0f, output, splitSize, bias);
+        if (weight.bias.Data()) {
+            MMHelper::compute_bias(false, batchSize, splitSize, inputSize, 1.0f, input, inputSize, weight.weight.Data(),
+                    weight.scale.Data(), weight.zero.Data(), 0.0f, output, splitSize, weight.bias.Data());
 
         } else {
-            MMHelper::compute(false, batchSize, splitSize, inputSize, 1.0f, input, inputSize, weight.Data(),
-                    scaleWeight.Data(), zeroWeight.Data(), 0.0f, output, splitSize);
+            MMHelper::compute(false, batchSize, splitSize, inputSize, 1.0f, input, inputSize, weight.weight.Data(),
+                    weight.scale.Data(), weight.zero.Data(), 0.0f, output, splitSize);
         }
     }
 
@@ -105,8 +93,5 @@ private:
     int splitSize;
     int splitOffset;
 
-    hpj::Matrix<WeiT> weight;
-    hpj::Vector<float> scaleWeight; // if weighs is int8
-    hpj::Vector<float> zeroWeight; // if weighs is int8
-    float *bias;
+    xft::LinearWeight<WeiT> weight;
 };

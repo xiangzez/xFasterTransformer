@@ -19,6 +19,7 @@
 #include "matmul_helper.h"
 #include "singleton.h"
 #include "timeline.h"
+#include "weight_util.h"
 
 // C++ implementation for the python code in modeling_llama.py:
 // residual = hidden_states
@@ -51,35 +52,24 @@ public:
         REQUIRES(ctx->actType == DecoderContext::SILU, "unsupported activation.");
 
         // Vertically split the gate weight and up weight
-        hpj::Matrix<WeiT> quantizedGateWeight, quantizedUpWeight, quantizedDownWeight;
-
-        auto it = SplitUtil::getTaskRange(imSize, ctx->numSplit, ctx->splitIdx);
-        gateWeight.Resize(hiddenSize, it.second - it.first);
-        upWeight.Resize(hiddenSize, it.second - it.first);
-        downWeight.Resize(it.second - it.first, hiddenSize);
-
-        MMHelper::convertWeight(
-                ctx, trans, hiddenSize, imSize, gateW, true, quantizedGateWeight, gateWeightScale, gateWeightZero);
-        MMHelper::packWeight(trans, quantizedGateWeight, gateWeight);
-
-        MMHelper::convertWeight(
-                ctx, trans, hiddenSize, imSize, upW, true, quantizedUpWeight, upWeightScale, upWeightZero);
-        MMHelper::packWeight(trans, quantizedUpWeight, upWeight);
+        gateWeight.set(ctx, trans, hiddenSize, imSize, gateW, nullptr, true);
+        upWeight.set(ctx, trans, hiddenSize, imSize, upW, nullptr, true);
 
         // Horizontally split the down weight
-        MMHelper::convertWeight(
-                ctx, trans, imSize, hiddenSize, downW, false, quantizedDownWeight, downWeightScale, downWeightZero);
-        MMHelper::packWeight(trans, quantizedDownWeight, downWeight);
+        downWeight.set(ctx, trans, imSize, hiddenSize, downW, nullptr, false);
 
 #ifdef DEBUG
-        dbg.debugPrint("quantizedGateWeight:\n");
-        dbg.dumpMatrix(quantizedGateWeight);
+        dbg.debugPrint("gateWeight packed weight: [%d, %d] (%d)\n", gateWeight.weight.Rows(), gateWeight.weight.Cols(),
+                gateWeight.weight.Stride());
+        dbg.dumpMatrix(gateWeight.weight);
 
-        dbg.debugPrint("quantizedUpWeight:\n");
-        dbg.dumpMatrix(quantizedUpWeight);
+        dbg.debugPrint("upWeight packed weight: [%d, %d] (%d)\n", upWeight.weight.Rows(), upWeight.weight.Cols(),
+                upWeight.weight.Stride());
+        dbg.dumpMatrix(upWeight.weight);
 
-        dbg.debugPrint("quantizedDownWeight:\n");
-        dbg.dumpMatrix(quantizedDownWeight);
+        dbg.debugPrint("downWeight packed weight: [%d, %d] (%d)\n", downWeight.weight.Rows(), downWeight.weight.Cols(),
+                downWeight.weight.Stride());
+        dbg.dumpMatrix(downWeight.weight);
 #endif
 
         // LlamaRMSNorm
@@ -105,9 +95,7 @@ public:
         auto &normBuffer = ctx->normBuf;
         auto &imBuffer = ctx->imOut;
 
-        if (doLnBefore == true) {
-            DecoderUtil::rmsNorm(inBuffer, normBuffer, normWeight, 1e-6);
-        }
+        if (doLnBefore == true) { DecoderUtil::rmsNorm(inBuffer, normBuffer, normWeight, 1e-6); }
 
 #ifdef DEBUG
         dbg.debugPrint("LayerNorm before MLP:\n");
@@ -118,7 +106,7 @@ public:
 
 #ifdef DEBUG
         dbg.debugPrint("gateWeight:\n");
-        dbg.dumpMatrix(gateWeight);
+        dbg.dumpMatrix(gateWeight.weight);
         dbg.debugPrint("gate output:\n");
         dbg.dumpMatrix(imBuffer);
 #endif
@@ -127,7 +115,7 @@ public:
 
 #ifdef DEBUG
         dbg.debugPrint("upWeight:\n");
-        dbg.dumpMatrix(upWeight);
+        dbg.dumpMatrix(upWeight.weight);
         dbg.debugPrint("up output:\n");
         dbg.dumpMatrix(imBuffer);
 #endif
@@ -136,7 +124,7 @@ public:
 
 #ifdef DEBUG
         dbg.debugPrint("downWeight:\n");
-        dbg.dumpMatrix(downWeight);
+        dbg.dumpMatrix(downWeight.weight);
         dbg.debugPrint("residential:\n");
         dbg.dumpMatrix(inBuffer);
         dbg.debugPrint("final output:\n");
@@ -149,16 +137,16 @@ private:
         TimeLine t("GateProj");
 
         assert(input.Rows() == output.Rows());
-        assert(input.Cols() == gateWeight.Rows());
-        assert(gateWeight.Cols() == output.Cols());
+        assert(input.Cols() == gateWeight.weight.Rows());
+        assert(gateWeight.weight.Cols() == output.Cols());
 
         int M = input.Rows(), N = output.Cols(), K = input.Cols();
         int lda = input.Stride(), ldc = output.Stride();
 
         const float *A = input.Data();
-        const WeiT *B = gateWeight.Data();
-        const float *scaleB = gateWeightScale.Data();
-        const float *zeroB = gateWeightZero.Data();
+        const WeiT *B = gateWeight.weight.Data();
+        const float *scaleB = gateWeight.scale.Data();
+        const float *zeroB = gateWeight.zero.Data();
         float *C = output.Data();
 
         MMHelper::compute_silu(false, M, N, K, 1.0f, A, lda, B, scaleB, zeroB, 0.0f, C, ldc);
@@ -168,16 +156,16 @@ private:
         TimeLine t("UpProj");
 
         assert(input.Rows() == output.Rows());
-        assert(input.Cols() == upWeight.Rows());
-        assert(upWeight.Cols() == output.Cols());
+        assert(input.Cols() == upWeight.weight.Rows());
+        assert(upWeight.weight.Cols() == output.Cols());
 
         int M = input.Rows(), N = output.Cols(), K = input.Cols();
         int lda = input.Stride(), ldc = output.Stride();
 
         const float *A = input.Data();
-        const WeiT *B = upWeight.Data();
-        const float *scaleB = upWeightScale.Data();
-        const float *zeroB = upWeightZero.Data();
+        const WeiT *B = upWeight.weight.Data();
+        const float *scaleB = upWeight.scale.Data();
+        const float *zeroB = upWeight.zero.Data();
         float *C = output.Data();
 
         MMHelper::compute_resmul(false, M, N, K, 1.0f, A, lda, B, scaleB, zeroB, 0.0f, C, ldc, C, ldc);
@@ -188,16 +176,16 @@ private:
         TimeLine t("DownProj");
 
         assert(input.Rows() == output.Rows());
-        assert(input.Cols() == downWeight.Rows());
-        assert(downWeight.Cols() == output.Cols());
+        assert(input.Cols() == downWeight.weight.Rows());
+        assert(downWeight.weight.Cols() == output.Cols());
 
         int M = input.Rows(), N = output.Cols(), K = input.Cols();
         int lda = input.Stride(), ldc = output.Stride(), ldr = residential.Stride();
 
         const float *A = input.Data();
-        const WeiT *B = downWeight.Data();
-        const float *scaleB = downWeightScale.Data();
-        const float *zeroB = downWeightZero.Data();
+        const WeiT *B = downWeight.weight.Data();
+        const float *scaleB = downWeight.scale.Data();
+        const float *zeroB = downWeight.zero.Data();
         float *C = output.Data();
         const float *R = residential.Data();
 
@@ -209,15 +197,9 @@ private:
     }
 
 protected:
-    hpj::Matrix<WeiT> gateWeight;
-    hpj::Vector<float> gateWeightScale; // For int8_t weight
-    hpj::Vector<float> gateWeightZero; // For int8_t weight
-    hpj::Matrix<WeiT> upWeight;
-    hpj::Vector<float> upWeightScale; // For int8_t weight
-    hpj::Vector<float> upWeightZero; // For int8_t weight
-    hpj::Matrix<WeiT> downWeight;
-    hpj::Vector<float> downWeightScale; // For int8_t weight
-    hpj::Vector<float> downWeightZero; // For int8_t weight
+    xft::LinearWeight<WeiT> gateWeight;
+    xft::LinearWeight<WeiT> upWeight;
+    xft::LinearWeight<WeiT> downWeight;
 
     // LlamaRMSNorm param
     hpj::Vector<float> normWeight;

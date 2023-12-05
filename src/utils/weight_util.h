@@ -20,8 +20,12 @@
 #include "INIReader.h"
 #include "bfloat16.h"
 #include "compile_util.h"
+#include "debugger.h"
 #include "float16.h"
+#include "matmul_helper.h"
 #include "my_types.h"
+#include "split_util.h"
+#include "transformer_ctx.h"
 
 namespace xft {
 
@@ -155,4 +159,136 @@ template int loadWeightWithConvert<float, float16_t>(float *, int, const std::st
 template int loadWeightWithConvert<float16_t, float16_t>(float16_t *, int, const std::string &, bool);
 template int loadWeightWithConvert<int8_t, float16_t>(int8_t *, int, const std::string &, bool);
 template int loadWeightWithConvert<bfloat16_t, float16_t>(bfloat16_t *, int, const std::string &, bool);
+
+template <typename WeiT>
+class LinearWeight {
+public:
+    // Pack the MatMul weight from 'src(rows, cols)' to 'weight'
+    // trans: 'src' is transposed or not
+    // verticalSplit: vertical split or horizontal split, vertical vs. horizontal:
+    //  _________________________            _________________________
+    // |            |            |          |                         |
+    // |            |            |          |_________________________|
+    // |            |            |          |                         |
+    // |____________|____________|          |_________________________|
+    //           vertical                            horizontal
+    //
+    // ****************************************************************************
+    //
+    // Vertical split like the left one, but if transposed, like the right one
+    //      |<-------- cols ----------|           |<-------- rows ----------|
+    //  _    _________________________        _    _________________________
+    //  ↑   |            |            |       ↑   |                         |
+    //  |   |            |            |       |   |_________________________|
+    // rows |            |            |      cols |                         |
+    //  ↓   |____________|____________|       ↓   |_________________________|
+    //             not_transposed                          transposed
+    //
+    // ****************************************************************************
+    //
+    // Horizontal split like the right one, but if transposed, like the left one
+    //      |<-------- rows ----------|           |<-------- cols ----------|
+    //  _    _________________________        _    _________________________
+    //  ↑   |            |            |       ↑   |                         |
+    //  |   |            |            |       |   |_________________________|
+    // cols |            |            |      rows |                         |
+    //  ↓   |____________|____________|       ↓   |_________________________|
+    //               transposed                          not_transposed
+    //
+    void set(bool trans, int rows, int cols, const float *weight, const float *bias, int splitOffset, int splitSize,
+            bool verticalSplit, bool unused) {
+        if (bias) {
+            if (verticalSplit) {
+                this->bias.Resize(splitSize);
+                memcpy(this->bias.Data(), bias + splitOffset, splitSize * sizeof(float));
+            } else {
+                this->bias.Resize(cols);
+                if (splitOffset == 0) { // splitIdx == 1
+                    memcpy(this->bias.Data(), bias, cols * sizeof(float));
+                }
+                // For other splits, bias.Data() == NULL
+            }
+        }
+
+        // transform trans cases to no trans cases
+        if (trans) {
+            std::swap(rows, cols);
+            verticalSplit = !verticalSplit;
+        }
+
+        int rowOffset, rowSize, colOffset, colSize;
+        if (verticalSplit) {
+            rowOffset = 0;
+            rowSize = rows;
+            colOffset = splitOffset;
+            colSize = splitSize;
+        } else {
+            rowOffset = splitOffset;
+            rowSize = splitSize;
+            colOffset = 0;
+            colSize = cols;
+        }
+
+        hpj::Matrix<WeiT> convertedWeight;
+        convertedWeight.Resize(rowSize, colSize);
+
+        if constexpr (std::is_same_v<WeiT, int8_t>) {
+            if (trans) { std::swap(colSize, rowSize); }
+            this->scale.Resize(colSize);
+            this->zero.Resize(colSize);
+            const float *src = weight + rowOffset * cols + colOffset;
+#ifdef AVX512_FP32_WEIGHT_ONLY_INT8
+            xdnn_sgemm_f32i8f32_quantize(trans, colSize, rowSize, src, cols, 0.9999f, convertedWeight.Data(),
+                    convertedWeight.Stride(), this->scale.Data(), this->zero.Data());
+#elif defined(AVX512_FP16_WEIGHT_ONLY_INT8)
+            xdnn_hgemm_f32i8f32_quantize(trans, colSize, rowSize, src, cols, 0.9999f, convertedWeight.Data(),
+                    convertedWeight.Stride(), this->scale.Data(), this->zero.Data());
+#else
+            printf("%s:%d: Need to define WEIGHT_ONLY_INT8 kernel data type.\n", __FILE__, __LINE__);
+            exit(-1);
+#endif
+        } else {
+#pragma omp parallel for
+            for (int i = 0; i < rowSize; i++) {
+                WeiT *dst = convertedWeight.Data() + i * convertedWeight.Stride();
+                const float *src = weight + (rowOffset + i) * cols + colOffset;
+                if constexpr (std::is_same_v<WeiT, float>) {
+                    memcpy(dst, src, colSize * sizeof(float));
+                } else if constexpr (std::is_same_v<WeiT, float16_t>) {
+                    float16_t::cvt_float_to_float16(src, dst, colSize);
+                } else if constexpr (std::is_same_v<WeiT, bfloat16_t>) {
+                    bfloat16_t::cvt_float_to_bfloat16(src, dst, colSize);
+                }
+            }
+        }
+
+        MMHelper::packWeight(trans, convertedWeight, this->weight);
+    }
+
+    void set(bool trans, int rows, int cols, const float *weight, const float *bias, int numSplit, int splitIdx,
+            bool verticalSplit) {
+        int totalSize = verticalSplit ? cols : rows;
+        std::pair<int, int> range = SplitUtil::getTaskRange(totalSize, numSplit, splitIdx);
+
+        int splitSize = range.second - range.first;
+        int splitOffset = range.first;
+
+        set(trans, rows, cols, weight, bias, splitOffset, splitSize, verticalSplit, true);
+    }
+
+    void set(bool trans, int rows, int cols, const float *weight) {
+        set(trans, rows, cols, weight, nullptr, 1, 0, true);
+    }
+
+    void set(DecoderContext *ctx, bool trans, int rows, int cols, const float *weight, const float *bias,
+            bool verticalSplit) {
+        set(trans, rows, cols, weight, bias, ctx->numSplit, ctx->splitIdx, verticalSplit);
+    }
+
+    hpj::Matrix<WeiT> weight;
+    hpj::Vector<float> scale;
+    hpj::Vector<float> zero;
+    hpj::Vector<float> bias;
+};
+
 } // namespace xft

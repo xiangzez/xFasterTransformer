@@ -22,81 +22,61 @@
 #include "float16.h"
 #include "matmul_helper.h"
 #include "my_types.h"
+#include "split_util.h"
 #include "timeline.h"
 #include "transformer_ctx.h"
+#include "weight_util.h"
 
 class DecoderUtil {
 public:
-    // Dense without bias
     template <typename WeiT>
-    static void dense(hpj::Matrix<float> &x, hpj::Matrix<WeiT> &weight, hpj::Vector<float> &scaleWeight,
-            hpj::Vector<float> &zeroWeight, hpj::Matrix<float> &result) {
-        MMHelper::compute(false, x.Rows(), weight.Cols(), x.Cols(), 1.0f, x.Data(), x.Stride(), weight.Data(),
-                scaleWeight.Data(), zeroWeight.Data(), 0.0f, result.Data(), result.Stride());
-    }
-
-    template <typename WeiT>
-    static void dense(hpj::Matrix<float> &x, hpj::Matrix<WeiT> &weight, hpj::Vector<float> &scaleWeight,
-            hpj::Vector<float> &zeroWeight, hpj::Vector<float> &bias, hpj::Matrix<float> &result) {
-        REQUIRES(x.Cols() == weight.Rows(), "dense error: x.Cols (%d) != weight.Rows (%d)", x.Cols(), weight.Rows());
-        REQUIRES(x.Rows() == result.Rows(), "dense error: x.Rows (%d) != result.Rows (%d)", x.Rows(), result.Rows());
-        REQUIRES(weight.Cols() == result.Cols(), "dense error: weight.Cols (%d) != result.Cols (%d)", weight.Cols(),
-                result.Cols());
-
-        // Bias is empty
-        if (bias.Size() == 0) {
-            dense(x, weight, scaleWeight, zeroWeight, result);
-            return;
-        }
-
-        MMHelper::compute_bias(false, x.Rows(), weight.Cols(), x.Cols(), 1.0f, x.Data(), x.Stride(), weight.Data(),
-                scaleWeight.Data(), zeroWeight.Data(), 0.0f, result.Data(), result.Stride(), bias.Data());
-    }
-
-    // result = x * weight + bias + input
-    template <typename WeiT>
-    static void denseWithSum(hpj::Matrix<float> &x, hpj::Matrix<WeiT> &weight, hpj::Vector<float> &scaleWeight,
-            hpj::Vector<float> &zeroWeight, hpj::Vector<float> &bias, hpj::Matrix<float> &input,
-            hpj::Matrix<float> &result) {
-        REQUIRES(x.Cols() == weight.Rows(), "denseWithSum error: x.Cols (%d) != weight.Rows (%d)", x.Cols(),
-                weight.Rows());
-        REQUIRES(x.Rows() == result.Rows(), "denseWithSum error: x.Rows (%d) != result.Rows (%d)", x.Rows(),
-                result.Rows());
-        REQUIRES(weight.Cols() == result.Cols(), "denseWithSum error: weight.Cols (%d) != result.Cols(%d)",
-                weight.Cols(), result.Cols());
-        REQUIRES(input.Rows() == result.Rows(), "denseWithSum error: input.Rows (%d) != result.Rows (%d)", input.Rows(),
-                result.Rows());
-        REQUIRES(input.Cols() == result.Cols(), "denseWithSum error: input.Cols (%d) != result.Cols (%d)", input.Cols(),
-                result.Cols());
-
-        // Make sure use the correct bias
-        float *pbias = bias.Data();
-        if (bias.Size() == 0) { pbias = nullptr; }
-
-        MMHelper::compute_residential(false, x.Rows(), weight.Cols(), x.Cols(), 1.0f, x.Data(), x.Stride(),
-                weight.Data(), scaleWeight.Data(), zeroWeight.Data(), 0.0f, result.Data(), result.Stride(), pbias,
-                input.Data(), input.Stride());
-    }
-
-    // result = x * weight + bias + gamma * input
-    // TODO: some path is commented
-    template <typename WeiT>
-    static void denseWithScaledSum(hpj::Matrix<float> &x, hpj::Matrix<WeiT> &weight, hpj::Vector<float> &scaleWeight,
-            hpj::Vector<float> &zeroWeight, hpj::Vector<float> &bias, float gamma, hpj::Matrix<float> &input,
-            hpj::Matrix<float> &result) {
-        REQUIRES(x.Cols() == weight.Rows(), "Error: x.Cols() != weight.Rows()");
+    static void dense(hpj::Matrix<float> &x, xft::LinearWeight<WeiT> &weight, float gamma, hpj::Matrix<float> &input,
+            hpj::Matrix<float> &result, int splitIdx) {
+        REQUIRES(x.Cols() == weight.weight.Rows(), "Error: x.Cols() != weight.Rows()");
         REQUIRES(x.Rows() == result.Rows(), "Error: x.Rows() != result.Rows()");
-        REQUIRES(weight.Cols() == result.Cols(), "Error: weight.Cols() != result.Cols()");
+        REQUIRES(weight.weight.Cols() == result.Cols(), "Error: weight.Cols() != result.Cols()");
         REQUIRES(input.Rows() == result.Rows(), "Error: input.Rows() != result.Rows()");
         REQUIRES(input.Cols() == result.Cols(), "Error: input.Cols() != result.Cols()");
 
-        // Make sure use the correct bias
-        float *pbias = bias.Data();
-        if (bias.Size() == 0) { pbias = nullptr; }
+        if (splitIdx == 0) {
+            // denseWithScaledSum should be enough, but as the performance of denseWithScaledSum is not verified,
+            // So here still use denseWithSum
+            if (gamma == 1) {
+                MMHelper::compute_residential(false, x.Rows(), weight.weight.Cols(), x.Cols(), 1.0f, x.Data(),
+                        x.Stride(), weight.weight.Data(), weight.scale.Data(), weight.zero.Data(), 0.0f, result.Data(),
+                        result.Stride(), weight.bias.Data(), input.Data(), input.Stride());
+            } else {
+                MMHelper::compute_resext(false, x.Rows(), weight.weight.Cols(), x.Cols(), 1.0f, x.Data(), x.Stride(),
+                        weight.weight.Data(), weight.scale.Data(), weight.zero.Data(), 0.0f, result.Data(),
+                        result.Stride(), weight.bias.Data(), gamma, input.Data(), input.Stride());
+            }
+        } else {
+            if (weight.bias.Size() == 0) {
+                MMHelper::compute(false, x.Rows(), weight.weight.Cols(), x.Cols(), 1.0f, x.Data(), x.Stride(),
+                        weight.weight.Data(), weight.scale.Data(), weight.zero.Data(), 0.0f, result.Data(),
+                        result.Stride());
+            } else {
+                MMHelper::compute_bias(false, x.Rows(), weight.weight.Cols(), x.Cols(), 1.0f, x.Data(), x.Stride(),
+                        weight.weight.Data(), weight.scale.Data(), weight.zero.Data(), 0.0f, result.Data(),
+                        result.Stride(), weight.bias.Data());
+            }
+        }
+    }
 
-        MMHelper::compute_resext(false, x.Rows(), weight.Cols(), x.Cols(), 1.0f, x.Data(), x.Stride(), weight.Data(),
-                scaleWeight.Data(), zeroWeight.Data(), 0.0f, result.Data(), result.Stride(), pbias, gamma, input.Data(),
-                input.Stride());
+    template <typename WeiT>
+    static void dense(hpj::Matrix<float> &x, xft::LinearWeight<WeiT> &weight, hpj::Matrix<float> &result) {
+        REQUIRES(x.Cols() == weight.weight.Rows(), "Error: x.Cols() != weight.Rows()");
+        REQUIRES(x.Rows() == result.Rows(), "Error: x.Rows() != result.Rows()");
+        REQUIRES(weight.weight.Cols() == result.Cols(), "Error: weight.Cols() != result.Cols()");
+        if (weight.bias.Size() == 0) {
+            MMHelper::compute(false, x.Rows(), weight.weight.Cols(), x.Cols(), 1.0f, x.Data(), x.Stride(),
+                    weight.weight.Data(), weight.scale.Data(), weight.zero.Data(), 0.0f, result.Data(),
+                    result.Stride());
+        } else {
+            MMHelper::compute_bias(false, x.Rows(), weight.weight.Cols(), x.Cols(), 1.0f, x.Data(), x.Stride(),
+                    weight.weight.Data(), weight.scale.Data(), weight.zero.Data(), 0.0f, result.Data(), result.Stride(),
+                    weight.bias.Data());
+        }
     }
 
 #if __AVX512F__

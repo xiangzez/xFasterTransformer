@@ -19,7 +19,7 @@
 template <typename WeiT, typename NORM_CLS, bool INPUT_AS_RESID>
 class ChatGLM2MLP : public LlamaMLP<WeiT> {
 public:
-    ChatGLM2MLP(DecoderContext *ctx) : LlamaMLP<WeiT>(ctx) { }
+    ChatGLM2MLP(DecoderContext *ctx) : LlamaMLP<WeiT>(ctx) {}
 
     // The inerface is for PyTorch, thus the weights are already transposed
     void setWeights(DecoderContext *ctx, std::vector<float *> &params, bool trans = true) {
@@ -54,44 +54,29 @@ public:
             }
         }
 
-        MMHelper::convertWeight(
-                trans, hiddenSize, colSplit, gateW, convertedGateWeight, this->gateWeightScale, this->gateWeightZero);
-        MMHelper::packWeight(trans, convertedGateWeight, this->gateWeight);
-
-        MMHelper::convertWeight(trans, hiddenSize, colSplit, upW, convertedUpWeight, this->upWeightScale, this->upWeightZero);
-        MMHelper::packWeight(trans, convertedUpWeight, this->upWeight);
+        this->gateWeight.set(trans, hiddenSize, colSplit, gateW);
+        this->upWeight.set(trans, hiddenSize, colSplit, upW);
 
         free(gateW);
         free(upW);
 
         // Horizontally split the down weight
-        MMHelper::convertWeight(ctx, trans, intermediateSize, hiddenSize, downW, false, convertedDownWeight,
-                this->downWeightScale, this->downWeightZero);
-        MMHelper::packWeight(trans, convertedDownWeight, this->downWeight);
+        this->downWeight.set(ctx, trans, intermediateSize, hiddenSize, downW, nullptr, false);
+
 #ifdef DEBUG
-        this->dbg.debugPrint("convertedGateWeight [%d, %d](%d):\n", convertedGateWeight.Rows(), convertedGateWeight.Cols(),
-                convertedGateWeight.Stride());
-        this->dbg.dumpMatrix(convertedGateWeight);
+        this->dbg.debugPrint("gateWeight packed weight: [%d, %d] (%d)\n", this->gateWeight.weight.Rows(),
+                this->gateWeight.weight.Cols(), this->gateWeight.weight.Stride());
+        this->dbg.dumpMatrix(this->gateWeight.weight);
 
-        this->dbg.debugPrint("packed convertedGateWeight [%d, %d](%d):\n", this->gateWeight.Rows(), this->gateWeight.Cols(),
-                this->gateWeight.Stride());
-        this->dbg.dumpMatrix(this->gateWeight);
+        this->dbg.debugPrint("upWeight packed weight: [%d, %d] (%d)\n", this->upWeight.weight.Rows(),
+                this->upWeight.weight.Cols(), this->upWeight.weight.Stride());
+        this->dbg.dumpMatrix(this->upWeight.weight);
 
-        this->dbg.debugPrint("convertedUpWeight [%d, %d](%d):\n", convertedUpWeight.Rows(), convertedUpWeight.Cols(),
-                convertedUpWeight.Stride());
-        this->dbg.dumpMatrix(convertedUpWeight);
-
-        this->dbg.debugPrint("packed convertedUpWeight [%d, %d](%d):\n", this->upWeight.Rows(), this->upWeight.Cols(), this->upWeight.Stride());
-        this->dbg.dumpMatrix(this->upWeight);
-
-        this->dbg.debugPrint("convertedDownWeight [%d, %d](%d):\n", convertedDownWeight.Rows(), convertedDownWeight.Cols(),
-                convertedDownWeight.Stride());
-        this->dbg.dumpMatrix(convertedDownWeight);
-
-        this->dbg.debugPrint("packed convertedDownWeight [%d, %d](%d):\n", this->downWeight.Rows(), this->downWeight.Cols(),
-                this->downWeight.Stride());
-        this->dbg.dumpMatrix(this->downWeight);
+        this->dbg.debugPrint("downWeight packed weight: [%d, %d] (%d)\n", this->downWeight.weight.Rows(),
+                this->downWeight.weight.Cols(), this->downWeight.weight.Stride());
+        this->dbg.dumpMatrix(this->downWeight.weight);
 #endif
+
         // norm.setWeight(normW, NULL, hiddenSize);
         if (normW) {
             this->normWeight.Resize(hiddenSize);
