@@ -148,6 +148,117 @@ public:
         this->norm.setWeight(gamma1, beta1, hiddenSize);
     }
 
+    void setQWeights(DecoderContext *ctx, const int8_t *queryQWeight, const float *queryZeros, const float *queryScales, const float *queryBias,
+            const int8_t *keyQWeight, const float *keyZeros, const float *keyScales, const float *keyBias,
+            const int8_t *valueQWeight, const float *valueZeros, const float *valueScales, const float *valueBias,
+            const int8_t *attnOutQWeight, const float *attnOutZeros, const float *attnOutScales, const float *attnOutBias,
+            const float *gamma1, const float *beta1, bool trans = true) {
+
+        if constexpr (!std::is_same_v<WeiT, int8_t>) {
+            printf("%s:%d: Data type should be int8.\n", __FILE__, __LINE__);
+            exit(-1);
+        } else {
+            int hiddenSize = ctx->hiddenSize;
+            int headSize = ctx->attHeadSize;
+
+            // Merged weights, dimension is like: hiddenSize * (hiddenSize + 2 * kvHiddenSize)
+            // Vertically split the QKV weights
+            int qResponsibleCols = (this->endQHead - this->startQHead) * headSize;
+            int kvResponsibleCols = (this->endKVHead - this->startKVHead) * headSize;
+            int responsibleCols = qResponsibleCols + 2 * kvResponsibleCols;
+            qkvWeight.Resize(hiddenSize, responsibleCols);
+
+            int8_t *concatQWeight = (int8_t *)malloc(hiddenSize * responsibleCols * sizeof(int8_t));
+            float * concatZeros = (float *)malloc(responsibleCols * sizeof(float));
+            float * concatScales = (float *)malloc(responsibleCols * sizeof(float));
+            if (trans) {
+                memcpy(concatQWeight, queryQWeight + this->startQHead * headSize * hiddenSize,
+                        hiddenSize * qResponsibleCols * sizeof(int8_t));
+                memcpy(concatQWeight + hiddenSize * qResponsibleCols, keyQWeight + this->startKVHead * headSize * hiddenSize,
+                        hiddenSize * kvResponsibleCols * sizeof(int8_t));
+                memcpy(concatQWeight + hiddenSize * (qResponsibleCols + kvResponsibleCols),
+                        valueQWeight + this->startKVHead * headSize * hiddenSize,
+                        hiddenSize * kvResponsibleCols * sizeof(int8_t));
+            } else {
+                int qkvStride = (ctx->attHeadNum + ctx->kvHeadNum + ctx->kvHeadNum) * ctx->attHeadSize;
+#pragma omp parallel for
+                for (int i = 0; i < hiddenSize; ++i) {
+                    memcpy(concatQWeight + i * responsibleCols, queryQWeight + i * qkvStride + this->startQHead * headSize,
+                            qResponsibleCols * sizeof(int8_t));
+                    memcpy(concatQWeight + i * responsibleCols + qResponsibleCols,
+                            keyQWeight + i * qkvStride + this->startKVHead * headSize, kvResponsibleCols * sizeof(int8_t));
+                    memcpy(concatQWeight + i * responsibleCols + qResponsibleCols + kvResponsibleCols,
+                            valueQWeight + i * qkvStride + this->startKVHead * headSize, kvResponsibleCols * sizeof(int8_t));
+                }
+            }
+            memcpy(concatZeros, queryZeros + this->startQHead * headSize, qResponsibleCols * sizeof(float));
+            memcpy(concatZeros + qResponsibleCols, keyZeros + this->startKVHead * headSize, kvResponsibleCols * sizeof(float));
+            memcpy(concatZeros + qResponsibleCols + kvResponsibleCols, valueZeros + this->startKVHead * headSize, kvResponsibleCols * sizeof(float));
+            memcpy(concatScales, queryScales + this->startQHead * headSize, qResponsibleCols * sizeof(float));
+            memcpy(concatScales + qResponsibleCols, keyScales + this->startKVHead * headSize, kvResponsibleCols * sizeof(float));
+            memcpy(concatScales + qResponsibleCols + kvResponsibleCols, valueScales + this->startKVHead * headSize, kvResponsibleCols * sizeof(float));
+
+            hpj::Matrix<WeiT> convertedqkvWeight;
+            MMHelper::convertQWeight(
+                    trans, hiddenSize, responsibleCols, concatQWeight, concatZeros, concatScales, convertedqkvWeight, qkvWeightScale, qkvWeightZero, qkvWeightSum);
+            MMHelper::packWeight(trans, convertedqkvWeight, qkvWeight);
+
+            free(concatQWeight);
+            free(concatZeros);
+            free(concatScales);
+
+#ifdef DEBUG
+            dbg.debugPrint("attention qkv weight: [%d, %d] (%d)\n", convertedqkvWeight.Rows(), convertedqkvWeight.Cols(),
+                    convertedqkvWeight.Stride());
+            dbg.dumpMatrix(convertedqkvWeight);
+            dbg.debugPrint(
+                    "attention qkv packed weight: [%d, %d] (%d)\n", qkvWeight.Rows(), qkvWeight.Cols(), qkvWeight.Stride());
+            dbg.dumpMatrix(qkvWeight);
+#endif
+
+            // Merged bias
+            if (queryBias && keyBias && valueBias) {
+                //responsibleCols = hiddenSize / ctx->numSplit;
+                qkvBias.Resize(responsibleCols);
+                memcpy(qkvBias.Data(), queryBias + ctx->splitIdx * qResponsibleCols, sizeof(float) * qResponsibleCols);
+                memcpy(qkvBias.Data() + qResponsibleCols, keyBias + this->startKVHead * headSize,
+                        sizeof(float) * kvResponsibleCols);
+                memcpy(qkvBias.Data() + qResponsibleCols + kvResponsibleCols, valueBias + this->startKVHead * headSize,
+                        sizeof(float) * kvResponsibleCols);
+            }
+
+            // Weights for attention output
+            // Horizontally split the weight, as the source (PyTorch weight) is transposed, thus looks like vertically
+            hpj::Matrix<WeiT> convertedWeight;
+            MMHelper::convertQWeight(trans, hiddenSize, hiddenSize, attnOutQWeight, attnOutZeros, attnOutScales, this->startQHead * headSize,
+                    qResponsibleCols, false, convertedWeight, attnOutputWeightScale, attnOutputWeightZero,
+                    attnOutputWeightSum, true);
+            MMHelper::packWeight(trans, convertedWeight, attnOutputWeight);
+
+#ifdef DEBUG
+            dbg.debugPrint("attention output weight: [%d, %d] (%d)\n", convertedWeight.Rows(), convertedWeight.Cols(),
+                    convertedWeight.Stride());
+            dbg.dumpMatrix(convertedWeight);
+            dbg.debugPrint("attention output packed weight: [%d, %d] (%d)\n", attnOutputWeight.Rows(),
+                    attnOutputWeight.Cols(), attnOutputWeight.Stride());
+            dbg.dumpMatrix(attnOutputWeight);
+#endif
+
+            // Attention output bias
+            if (attnOutBias) {
+                this->attnOutputBias.Resize(hiddenSize);
+                if (ctx->splitIdx == 0) {
+                    memcpy(this->attnOutputBias.Data(), attnOutBias, sizeof(float) * hiddenSize);
+                } else { // For other splits, set bias to 0, to avoid duplicated calculation
+                    memset(this->attnOutputBias.Data(), 0, sizeof(float) * hiddenSize);
+                }
+            }
+
+            // LayerNorm
+            this->norm.setWeight(gamma1, beta1, hiddenSize);
+        }
+    }
+
 #ifdef DEBUG
     void setDebugger(const Debugger &debugger) { this->dbg = debugger; }
 #endif

@@ -61,8 +61,8 @@ public:
                     this->gateWeightZero, this->gateWeightSum);
             MMHelper::packWeight(trans, convertedGateWeight, this->gateWeight);
 
-            MMHelper::convertWeight(trans, hiddenSize, colSplit, upW, convertedUpWeight, this->upWeightScale,
-                    this->upWeightZero, this->upWeightSum);
+            MMHelper::convertWeight(
+                    trans, hiddenSize, colSplit, upW, convertedUpWeight, this->upWeightScale, this->upWeightZero, this->upWeightSum);
             MMHelper::packWeight(trans, convertedUpWeight, this->upWeight);
 
             free(gateW);
@@ -98,7 +98,7 @@ public:
                     this->downWeightScale, this->downWeightZero, this->gateWeightSum);
         } else {
             MMHelper::convertWeight(ctx, trans, intermediateSize, hiddenSize, downW, false, convertedDownWeight,
-                    this->downWeightScale, this->downWeightZero, this->downWeightSum);
+                    this->downWeightScale, this->downWeightZero, this->gateWeightSum);
             MMHelper::packWeight(trans, convertedDownWeight, this->downWeight);
         }
 #ifdef DEBUG
@@ -131,5 +131,10 @@ public:
             this->normWeight.Resize(hiddenSize);
             memcpy(this->normWeight.Data(), normW, sizeof(float) * hiddenSize);
         }
+    }
+
+    void setQWeights(DecoderContext *ctx, std::vector<void *> &params, bool trans = true) {
+        printf("%s:%d: Not implemented! \n", __FILE__, __LINE__);
+        exit(-1);
     }
 };

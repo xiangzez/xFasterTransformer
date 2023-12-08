@@ -165,4 +165,5 @@ template int loadWeightWithConvert<float16_t, float16_t>(float16_t *, int, const
 template int loadWeightWithConvert<bfloat16_t, float16_t>(bfloat16_t *, int, const std::string &, bool);
 template int loadWeightWithConvert<int8_t, float16_t>(int8_t *, int, const std::string &, bool);
 template int loadWeightWithConvert<uint4x2_t, float16_t>(uint4x2_t *, int, const std::string &, bool);
+template int loadWeightWithConvert<int8_t, int8_t>(int8_t *, int, const std::string &, bool);
 } // namespace xft

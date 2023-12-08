@@ -108,6 +108,84 @@ public:
         }
     }
 
+    void setQWeights(DecoderContext *ctx, std::vector<void *> &params, bool trans = true) {
+        if constexpr (!std::is_same_v<WeiT, int8_t>) {
+            printf("%s:%d: Data type should be int8.\n", __FILE__, __LINE__);
+            exit(-1);
+        } else {
+            int hiddenSize = ctx->hiddenSize;
+            int imSize = ctx->intermediateSize;
+
+            // Refer to CommonDecoder for parameters order
+            const int8_t *gateW = (const int8_t *)params[0];
+            const float *gateZ = (const float *)params[1];
+            const float *gateS = (const float *)params[2];
+            const int8_t *upW = (const int8_t *)params[4];
+            const float *upZ = (const float *)params[5];
+            const float *upS = (const float *)params[6];
+            const float *normW = (const float *)params[8];
+            const int8_t *downW = (const int8_t *)params[10];
+            const float *downZ = (const float *)params[11];
+            const float *downS = (const float *)params[12];
+
+            REQUIRES(ctx->actType == DecoderContext::SILU, "unsupported activation.");
+
+            // Vertically split the gate weight and up weight
+            hpj::Matrix<WeiT> quantizedGateWeight, quantizedUpWeight, quantizedDownWeight;
+
+            auto it = SplitUtil::getTaskRange(imSize, ctx->numSplit, ctx->splitIdx);
+            downWeight.Resize(it.second - it.first, hiddenSize);
+
+            MMHelper::convertQWeight(ctx, trans, hiddenSize, imSize, gateW, gateZ, gateS, true, quantizedGateWeight, gateWeightScale,
+                    gateWeightZero, gateWeightSum);
+            MMHelper::convertQWeight(
+                    ctx, trans, hiddenSize, imSize, upW, upZ, upS, true, quantizedUpWeight, upWeightScale, upWeightZero, upWeightSum);
+
+            setMLPOPTConfig();
+            if (!enableCATMLP) {
+                gateWeight.Resize(hiddenSize, it.second - it.first);
+                upWeight.Resize(hiddenSize, it.second - it.first);
+                MMHelper::packWeight(trans, quantizedGateWeight, gateWeight);
+                MMHelper::packWeight(trans, quantizedUpWeight, upWeight);
+            } else {
+                hpj::Matrix<WeiT> quantizedCatWeights;
+                catGateUpWeights(quantizedGateWeight, quantizedUpWeight, gateWeightScale, gateWeightZero, gateWeightSum,
+                        upWeightScale, upWeightZero, upWeightSum, quantizedCatWeights, catWeightsScale, catWeightsZero,
+                        catWeightsSum);
+                quantizedGateWeight.Release();
+                quantizedUpWeight.Release();
+                catWeights.Resize(quantizedCatWeights.Rows(), quantizedCatWeights.Cols());
+                MMHelper::packWeight(trans, quantizedCatWeights, catWeights);
+            }
+            // Horizontally split the down weight
+            if (enableCBLASMLP && std::is_same_v<WeiT, bfloat16_t>) {
+                MMHelper::convertQWeight(ctx, trans, imSize, hiddenSize, downW, downZ, downS, false, downWeight, downWeightScale,
+                        downWeightZero, downWeightSum);
+            } else {
+                MMHelper::convertQWeight(ctx, trans, imSize, hiddenSize, downW, downZ, downS, false, quantizedDownWeight, downWeightScale,
+                        downWeightZero, downWeightSum);
+                MMHelper::packWeight(trans, quantizedDownWeight, downWeight);
+            }
+
+#ifdef DEBUG
+            dbg.debugPrint("quantizedGateWeight:\n");
+            dbg.dumpMatrix(quantizedGateWeight);
+
+            dbg.debugPrint("quantizedUpWeight:\n");
+            dbg.dumpMatrix(quantizedUpWeight);
+
+            dbg.debugPrint("quantizedDownWeight:\n");
+            dbg.dumpMatrix(quantizedDownWeight);
+#endif
+
+            // LlamaRMSNorm
+            if (normW) {
+                normWeight.Resize(hiddenSize);
+                memcpy(normWeight.Data(), normW, sizeof(float) * hiddenSize);
+            }
+        }
+    }
+
 #ifdef DEBUG
     void setDebugger(const Debugger &debugger) { this->dbg = debugger; }
 #endif
