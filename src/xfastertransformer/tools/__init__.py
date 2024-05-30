@@ -1,4 +1,4 @@
-# Copyright (c) 2023 Intel Corporation
+# Copyright (c) 2023-2024 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -14,11 +14,15 @@
 # ============================================================================
 
 from .llama_convert import LlamaConvert
+from .llama_convert import LlamaConvert as DeepseekConvert
+from .llama_convert import LlamaConvert as YiConvert
+from .llama_convert import LlamaConvert as GemmaConvert
 from .chatglm_convert import ChatGLMConvert
 from .chatglm2_convert import ChatGLM2Convert
 from .chatglm3_convert import ChatGLM3Convert
 from .opt_convert import OPTConvert
 from .baichuan_convert import BaichuanConvert
 from .qwen_convert import QwenConvert
+from .qwen2_convert import Qwen2Convert
 from .yarn_llama_convert import YaRNLlamaConvert
 from .gptneo_convert import GPTNeoConvert

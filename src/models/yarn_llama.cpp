@@ -1,4 +1,4 @@
-// Copyright (c) 2023 Intel Corporation
+// Copyright (c) 2023-2024 Intel Corporation
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,14 +16,18 @@
 
 #include "yarn_llama.h"
 
-template <typename WeiT>
-YaRNLlama<WeiT>::YaRNLlama(const std::string &modelPath)
-    : CommonDecoder<RopeScalingAttention<WeiT, LlamaYaRNScaledRotaryEmbedding, RmsNorm>, LlamaMLP<WeiT>, float>(
-            modelPath, "yarn_llama") {
+template <typename WeiT, typename KVCacheT>
+YaRNLlama<WeiT, KVCacheT>::YaRNLlama(const std::string &modelPath)
+    : CommonDecoder<
+            RopeScalingAttention<WeiT, LlamaYaRNScaledRotaryEmbedding, RmsNorm, typename TypeSelector<WeiT>::InType,
+                    typename TypeSelector<WeiT>::ImType, typename TypeSelector<WeiT>::OutType, true>,
+            LlamaMLP<WeiT, typename TypeSelector<WeiT>::InType, typename TypeSelector<WeiT>::ImType,
+                    typename TypeSelector<WeiT>::OutType>,
+            KVCacheT>(modelPath, "yarn_llama") {
     // Context
     DecoderContext *ctx = this->getContext();
 
-    // Embedding (no need position embed)
+    // Embedding
     embedding = new TokenEmbedding<float16_t>(ctx);
     setEmbeddingWeights(modelPath);
 
@@ -31,18 +35,18 @@ YaRNLlama<WeiT>::YaRNLlama(const std::string &modelPath)
     setFinalLnWeight(modelPath);
 }
 
-template <typename WeiT>
-YaRNLlama<WeiT>::~YaRNLlama() {
+template <typename WeiT, typename KVCacheT>
+YaRNLlama<WeiT, KVCacheT>::~YaRNLlama() {
     delete embedding;
 }
 
-template <typename WeiT>
-void YaRNLlama<WeiT>::setEmbeddingWeights(const std::string &modelPath) {
+template <typename WeiT, typename KVCacheT>
+void YaRNLlama<WeiT, KVCacheT>::setEmbeddingWeights(const std::string &modelPath) {
     embedding->setWeights(modelPath + "/model.wte.bin");
 }
 
-template <typename WeiT>
-void YaRNLlama<WeiT>::setFinalLnWeight(const std::string &modelPath) {
+template <typename WeiT, typename KVCacheT>
+void YaRNLlama<WeiT, KVCacheT>::setFinalLnWeight(const std::string &modelPath) {
     finalLN.setWeight(modelPath + "/model.final_layernorm.weight.bin", "", embedding->getHiddenSize());
 }
 
@@ -50,8 +54,8 @@ void YaRNLlama<WeiT>::setFinalLnWeight(const std::string &modelPath) {
 // def _prepare_decoder_attention_mask(self, attention_mask, input_shape, inputs_embeds, past_key_values_length):
 //     # create causal mask
 //     # [bsz, seq_len] -> [bsz, 1, tgt_seq_len, src_seq_len]
-template <typename WeiT>
-void YaRNLlama<WeiT>::prepareAttnMask(int *ids, int step) {
+template <typename WeiT, typename KVCacheT>
+void YaRNLlama<WeiT, KVCacheT>::prepareAttnMask(int *ids, int step) {
     DecoderContext *ctx = this->getContext();
     int seqLen = ctx->inputSeqLen;
 
@@ -84,20 +88,24 @@ void YaRNLlama<WeiT>::prepareAttnMask(int *ids, int step) {
     }
 }
 
-template <typename WeiT>
-void YaRNLlama<WeiT>::embeddingForward(int *ids, float *output, int batchSize, int seqLen) {
-    embedding->forward(ids, output, batchSize, seqLen);
+template <typename WeiT, typename KVCacheT>
+void YaRNLlama<WeiT, KVCacheT>::embeddingForward(int *ids, float *output, int tokenSize) {
+    embedding->forward(ids, output, tokenSize);
 }
 
-template <typename WeiT>
-void YaRNLlama<WeiT>::lastLayerNormForward(float *input, float *output, int rows) {
+template <typename WeiT, typename KVCacheT>
+void YaRNLlama<WeiT, KVCacheT>::embeddingForward(int *ids, bfloat16_t *output, int tokenSize) {
+    embedding->forward(ids, output, tokenSize);
+}
+
+template <typename WeiT, typename KVCacheT>
+void YaRNLlama<WeiT, KVCacheT>::lastLayerNormForward(float *input, float *output, int rows) {
     finalLN.forward(input, output, rows);
 }
 
-template class YaRNLlama<float>;
-template class YaRNLlama<float16_t>;
-template class YaRNLlama<bfloat16_t>;
-template class YaRNLlama<int8_t>;
-template class YaRNLlama<w8a8_t>;
-template class YaRNLlama<uint4x2_t>;
-template class YaRNLlama<nf4x2_t>;
+template <typename WeiT, typename KVCacheT>
+void YaRNLlama<WeiT, KVCacheT>::lastLayerNormForward(bfloat16_t *input, bfloat16_t *output, int rows) {
+    finalLN.forward(input, output, rows);
+}
+
+IMPLEMENT_MODEL(YaRNLlama, yarn_llama)

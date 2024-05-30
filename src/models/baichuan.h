@@ -1,4 +1,4 @@
-// Copyright (c) 2023 Intel Corporation
+// Copyright (c) 2023-2024 Intel Corporation
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -21,16 +21,23 @@
 #include "rotary_embedding.h"
 #include "token_embedding.h"
 
-template <typename WeiT>
-class Baichuan : public CommonDecoder<BaichuanAttention<WeiT, LlamaRotaryEmbedding, RmsNorm>, LlamaMLP<WeiT>, float> {
+template <typename WeiT, typename KVCacheT>
+class Baichuan
+    : public CommonDecoder<BaichuanAttention<WeiT, LlamaRotaryEmbedding, RmsNorm, typename TypeSelector<WeiT>::InType,
+                                   typename TypeSelector<WeiT>::ImType, typename TypeSelector<WeiT>::OutType, true>,
+              LlamaMLP<WeiT, typename TypeSelector<WeiT>::InType, typename TypeSelector<WeiT>::ImType,
+                      typename TypeSelector<WeiT>::OutType>,
+              KVCacheT> {
 public:
     Baichuan(const std::string &modelPath);
     ~Baichuan();
 
     void prepareAttnMaskBase(int *ids, int step);
     void prepareAttnMask(int *ids, int step);
-    void embeddingForward(int *ids, float *output, int batchSize, int seqLen);
+    void embeddingForward(int *ids, float *output, int tokenSize);
+    void embeddingForward(int *ids, bfloat16_t *output, int tokenSize);
     void lastLayerNormForward(float *input, float *output, int rows);
+    void lastLayerNormForward(bfloat16_t *input, bfloat16_t *output, int rows);
 
 private:
     void setEmbeddingWeights(const std::string &modelPath);
@@ -40,3 +47,5 @@ private:
     TokenEmbedding<float16_t> *embedding;
     RmsNorm finalLN;
 };
+
+REGISTER_MODEL(Baichuan, baichuan)

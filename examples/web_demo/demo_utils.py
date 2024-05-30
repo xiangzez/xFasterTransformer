@@ -62,6 +62,8 @@ XFT_DTYPE_LIST = [
     "w8a8_nf4",
 ]
 
+XFT_KVCACHE_DTYPE_LIST = ["fp16", "int8"]
+
 
 def check_transformers_version_compatibility(token_path):
     config_path = os.path.join(token_path, "config.json")
@@ -83,7 +85,7 @@ def check_transformers_version_compatibility(token_path):
 
 
 class ChatDemo:
-    def __init__(self, token_path, model_path, dtype):
+    def __init__(self, token_path, model_path, dtype, kv_cache_dtype: str = "fp16"):
         try:
             self.tokenizer = AutoTokenizer.from_pretrained(token_path, trust_remote_code=True)
         except Exception as e:
@@ -93,7 +95,9 @@ class ChatDemo:
             check_transformers_version_compatibility(token_path)
             sys.exit(-1)
 
-        self.model = xfastertransformer.AutoModel.from_pretrained(model_path, dtype=dtype)
+        self.model = xfastertransformer.AutoModel.from_pretrained(
+            model_path, dtype=dtype, kv_cache_dtype=kv_cache_dtype
+        )
 
     @property
     def rank(self):
@@ -194,12 +198,13 @@ class ChatDemo:
                 perf_info = f"Latency:\t{latency:.2f} ms\nThrougput:\t{throughput:.2f} tokens/s"
             yield self.post_process_generation(next_token_id, token_list, chatbot, query, history, perf_info)
 
-        total_cost = sum(time_cost[1:])
-        latency = total_cost * 1000 / len(time_cost[1:])
-        throughput = (len(time_cost[1:]) * batch_size) / total_cost
         response = self.tokenizer.decode(token_list, skip_special_tokens=True)
         response = self.process_response(response)
         print(f"Query is : {query.strip()}")
         print(f"Response is : {response}")
-        print(f"Latency:\t{latency:.2f} ms")
-        print(f"Througput:\t{throughput:.2f} tokens/s")
+        if len(time_cost) > 1:
+            total_cost = sum(time_cost[1:])
+            latency = total_cost * 1000 / len(time_cost[1:])
+            throughput = (len(time_cost[1:]) * batch_size) / total_cost
+            print(f"Latency:\t{latency:.2f} ms")
+            print(f"Througput:\t{throughput:.2f} tokens/s")

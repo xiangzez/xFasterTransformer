@@ -1,4 +1,4 @@
-# Copyright (c) 2023 Intel Corporation
+# Copyright (c) 2023-2024 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -34,25 +34,33 @@ _import_structure = {
     "automodel": ["AutoModel"],
     "tools": [
         "LlamaConvert",
+        "YiConvert",
+        "GemmaConvert",
         "ChatGLMConvert",
         "ChatGLM2Convert",
         "ChatGLM3Convert",
         "OPTConvert",
         "BaichuanConvert",
         "QwenConvert",
+        "Qwen2Convert",
         "YaRNLlamaConvert",
+        "DeepseekConvert",
         "GPTNeoConvert",
     ],
 }
 
 if TYPE_CHECKING:
     from .tools import LlamaConvert
+    from .tools import DeepseekConvert
+    from .tools import LlamaConvert as YiConvert
+    from .tools import LlamaConvert as GemmaConvert
     from .tools import ChatGLMConvert
     from .tools import ChatGLM2Convert
     from .tools import ChatGLM3Convert
     from .tools import OPTConvert
     from .tools import BaichuanConvert
     from .tools import QwenConvert
+    from .tools import Qwen2Convert
     from .tools import YaRNLlamaConvert
     from .tools import GPTNeoConvert
 else:

@@ -21,15 +21,14 @@
 #include "rotary_embedding_qwen.h"
 #include "token_embedding.h"
 
-// TODO: Need to check FP16 KV Cache
-template <typename WeiT>
-class Qwen : public CommonDecoder<QwenAttention<WeiT, QwenRotaryEmbedding, RmsNorm>, LlamaMLP<WeiT>, float> {
+template <typename WeiT, typename KVCacheT>
+class QwenLLM : public CommonDecoder<QwenAttention<WeiT, QwenRotaryEmbedding, RmsNorm>, LlamaMLP<WeiT>, KVCacheT> {
 public:
-    Qwen(const std::string &modelPath);
-    ~Qwen();
+    QwenLLM(const std::string &modelPath);
+    ~QwenLLM();
 
     void prepareAttnMask(int *ids, int step);
-    void embeddingForward(int *ids, float *output, int batchSize, int seqLen);
+    void embeddingForward(int *ids, float *output, int tokenSize);
     void lastLayerNormForward(float *input, float *output, int rows);
 
 private:
@@ -40,3 +39,5 @@ private:
     TokenEmbedding<float16_t> *embedding;
     RmsNorm finalLN;
 };
+
+REGISTER_MODEL(QwenLLM, qwen)

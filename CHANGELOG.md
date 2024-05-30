@@ -1,5 +1,50 @@
 # CHANGELOG
 
+# [Version v1.6.0](https://github.com/intel/xFasterTransformer/releases/tag/v1.6.0)
+v1.6.0 - Llama3 and Qwen2 series models supported.
+
+## Functionality
+- Support Llama3 and Qwen2 series models.
+- Add INT8 KV cache datatype, using `kv_cache_dtype` params to specify, including `int8`, `fp16`(default) and `fp32`.
+- More models enable full BF16 pipline, includes Chatglm2/3 and yarn-llama.
+- Add invokeMLPLLaMA FP16 API.
+- Support logits output using `forward()` api.
+
+## Dependency
+- Bump `transformers` to `4.40.0` to support Llama3 models.
+
+## Performance
+- Update xDNN to release `v1.4.6`
+
+## BUG fix
+- Fix numeric overflow when calculate softmax in sampling.  
+- fix assert bug when concat gate&up.
+
+# [Version v1.5.0](https://github.com/intel/xFasterTransformer/releases/tag/v1.5.0)
+v1.5.0 - Gemma series models supported.
+
+## Functionality
+- Support Gemma series medels, including Gemma and CodeGemma, and DeepSeek model.
+- Llama Converter support convert quantized huggingface model by params `from_quantized_model='gptq` into xFt format INT8/INT4 model files.
+- Support loading INT4 data weights directly from local files.
+- Optimize memory usage during QWen model conversion, particularly for QWen 72B.
+
+## Dependency
+- Bump `transformers` to `4.38.1` to support Gemma models.
+- Add `protobuf` to support new behavier in `tokenzier`.
+
+## Performance
+- Update xDNN to release `v1.4.5`
+- Add GPU kernel library gpuDNN v0.1 to support Intel Arc GPU series. 
+- Optimize ROPE perfermance by reducing repeated sin and cos embedding table data.
+- Accelerate KVCache copy by increasing parallelism in self attention.
+- Accelerate addreduce operation in long sequence case by transposing KVCache and tuned comm.
+
+## BUG fix
+- Fix a incorrect computing which should be in float, but was in integer.
+- Fix timeline is disordered.
+- Fix runtime issue of Qwen when seq_length is bigger than 32768.
+
 # [Version v1.4.0](https://github.com/intel/xFasterTransformer/releases/tag/v1.4.0)
 v1.4.0 - Fully BF16 support in Llama for better performance and serving framework support.
 

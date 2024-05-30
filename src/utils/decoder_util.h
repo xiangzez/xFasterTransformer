@@ -1,4 +1,4 @@
-// Copyright (c) 2023 Intel Corporation
+// Copyright (c) 2023-2024 Intel Corporation
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -28,13 +28,14 @@
 #include "transformer_ctx.h"
 #include "xdnn.h"
 
-int getFlashThresh();
-bool enableCATMLP();
+extern int getFlashThresh();
+extern bool enableCATMLP();
+extern bool enableSkipMsk();
 
 class DecoderUtil {
 public:
 #if __AVX512F__
-    static void rmsNorm(hpj::Matrix<float> &x, hpj::Matrix<float> &y, hpj::Vector<float> &normWeight, float epsilon) {
+    static void rmsNorm(xft::Matrix<float> &x, xft::Matrix<float> &y, xft::Vector<float> &normWeight, float epsilon) {
         TimeLine t("DecoderUtil::rmsNorm");
         float *pweight = normWeight.Data();
         int size = x.Cols();
@@ -85,7 +86,7 @@ public:
     }
 
     static void layerNorm(
-            hpj::Matrix<float> &x, hpj::Matrix<float> &y, hpj::Vector<float> &gamma, hpj::Vector<float> &beta) {
+            xft::Matrix<float> &x, xft::Matrix<float> &y, xft::Vector<float> &gamma, xft::Vector<float> &beta) {
         TimeLine t("DecoderUtil::layerNorm");
         float *pgamma = gamma.Data();
         float *pbeta = beta.Data();
@@ -146,7 +147,7 @@ public:
     }
 
     // Layer norm for small matrix with just a one Rrow
-    static void LayerNormOneRow(hpj::Matrix<float> &x, hpj::Matrix<float> &y, float *pgamma, float *pbeta, int size) {
+    static void LayerNormOneRow(xft::Matrix<float> &x, xft::Matrix<float> &y, float *pgamma, float *pbeta, int size) {
         TimeLine t("DecoderUtil::LayerNormOneRow");
         constexpr int BLKSIZE = 128;
         const int splitSize = (size > BLKSIZE && size % BLKSIZE == 0) ? BLKSIZE : size; // size of each split
@@ -208,8 +209,8 @@ public:
         }
     }
 #else
-    static void layerNorm(DecoderContext *ctx, hpj::Matrix<float> &x, hpj::Matrix<float> &y, hpj::Vector<float> &gamma,
-            hpj::Vector<float> &beta) {
+    static void layerNorm(DecoderContext *ctx, xft::Matrix<float> &x, xft::Matrix<float> &y, xft::Vector<float> &gamma,
+            xft::Vector<float> &beta) {
         TimeLine t("DecoderUtil::layerNorm");
         assert(x.Rows() == ctx->batchSize * ctx->inputSeqLen);
         assert(x.Cols() == ctx->hiddenSize);
@@ -246,7 +247,7 @@ public:
 #endif
 
     // General version
-    static void computeSoftmax(DecoderContext *ctx, float *data, const float *attnMask, int size) {
+    static void computeSoftmax(float *data, const float *attnMask, int size, float scale) {
         int vecs = (size + 15) / 16; // how many avx512 vectors
         __mmask16 tailMask = (size % 16 == 0 ? 0xffff : (1 << (size % 16)) - 1); // mask of last vector
 
@@ -255,7 +256,7 @@ public:
         // maxVal is used to avoid exp(x) = inf
         float maxVal = std::numeric_limits<float>::lowest();
         __m512 vmax = _mm512_set1_ps(maxVal);
-        __m512 vfactor = _mm512_set1_ps(ctx->attFactor);
+        __m512 vfactor = _mm512_set1_ps(scale);
 
         int i = 0;
         for (i = 0; i < vecs; ++i) {
@@ -290,8 +291,50 @@ public:
         }
     }
 
+    // General version
+    static void computeSoftmax(float *data, int size) {
+        int vecs = (size + 15) / 16; // how many avx512 vectors
+        __mmask16 tailMask = (size % 16 == 0 ? 0xffff : (1 << (size % 16)) - 1); // mask of last vector
+
+        __m512 vsum = _mm512_set1_ps(0);
+
+        // maxVal is used to avoid exp(x) = inf
+        float maxVal = std::numeric_limits<float>::lowest();
+        __m512 vmax = _mm512_set1_ps(maxVal);
+
+        int i = 0;
+        for (i = 0; i < vecs; ++i) {
+            __mmask16 k = (i == vecs - 1 ? tailMask : 0xffff);
+            __m512 vx = _mm512_maskz_loadu_ps(k, data + i * 16);
+            vmax = _mm512_mask_max_ps(vmax, k, vmax, vx);
+        }
+
+        maxVal = _mm512_reduce_max_ps(vmax);
+        vmax = _mm512_set1_ps(maxVal);
+
+        // Compute vexp(vx - vmax) and sum it
+        for (i = 0; i < vecs; ++i) {
+            __mmask16 k = (i == vecs - 1 ? tailMask : 0xffff);
+            __m512 vx = _mm512_maskz_loadu_ps(k, data + i * 16);
+            vx = BertUtil::vexp(vx - vmax);
+            _mm512_mask_storeu_ps(data + i * 16, k, vx);
+            vsum = _mm512_mask_add_ps(vsum, k, vsum, vx);
+        }
+
+        float sum = _mm512_reduce_add_ps(vsum);
+        __m512 vrsum = _mm512_set1_ps(1.0f / sum);
+
+        // Compute exp/sum(exp) and store
+        for (i = 0; i < vecs; ++i) {
+            __mmask16 k = (i == vecs - 1 ? tailMask : 0xffff);
+            __m512 vx = _mm512_maskz_loadu_ps(k, data + i * 16);
+            vx = vx * vrsum;
+            _mm512_mask_storeu_ps(data + i * 16, k, vx);
+        }
+    }
+
     // Softmax: skip the calculation when attention mask is the lowest value
-    static void softmaxSkipMask(DecoderContext *ctx, float *data, const float *attnMask, int size) {
+    static void softmaxSkipMask(float *data, const float *attnMask, int size, float scale) {
         int vecs = (size + 15) / 16; // how many avx512 vectors
         __mmask16 tailMask = (size % 16 == 0 ? 0xffff : (1 << (size % 16)) - 1); // mask of last vector
 
@@ -302,7 +345,7 @@ public:
         float maxVal = std::numeric_limits<float>::lowest();
         __m512 vlowest = _mm512_set1_ps(maxVal);
         __m512 vmax = _mm512_set1_ps(maxVal);
-        __m512 vfactor = _mm512_set1_ps(ctx->attFactor);
+        __m512 vfactor = _mm512_set1_ps(scale);
 
         int i = 0;
         for (i = 0; i < vecs; ++i) {
@@ -353,34 +396,9 @@ public:
         }
     }
 
-    // input and output are both in qkScores
-    // attnMask: attention mask with the shape of (bs, 1, queryLen, keyLen)
-    // Note: the source has the shape of (bs, attHeadNum/num_spit, queryLen, keyLen)
-    static void computeSoftmax(DecoderContext *ctx, const float *attnMask, int queryLen, int keyLen, int stride = -1) {
-        TimeLine t("DecoderUtil::computeSoftmax");
-        const int batchStride = queryLen * keyLen;
-        if (stride == -1) { stride = keyLen; }
-
-        auto range = SplitUtil::getTaskRange(ctx->attHeadNum, ctx->numSplit, ctx->splitIdx);
-        int responsibleHeads = range.second - range.first;
-
-#pragma omp parallel for collapse(2)
-        for (int b = 0; b < ctx->batchSize; ++b) {
-            for (int i = 0; i < responsibleHeads; ++i) {
-                int idx = b * responsibleHeads + i;
-                float *result = ctx->qkScores + idx * queryLen * stride;
-
-                for (int seq = 0; seq < queryLen; ++seq) {
-                    computeSoftmax(ctx, result, attnMask + b * batchStride + seq * keyLen, keyLen);
-                    result += stride;
-                }
-            }
-        }
-    }
-
     // Same implementation with softmax, but:
     // Return max value, and the sum value of exp
-    static std::pair<float, float> softmaxWithStats(DecoderContext *ctx, float *data, const float *attnMask, int size) {
+    static std::pair<float, float> softmaxWithStats(float *data, const float *attnMask, int size, float scale) {
         int vecs = (size + 15) / 16; // how many avx512 vectors
         __mmask16 tailMask = (size % 16 == 0 ? 0xffff : (1 << (size % 16)) - 1); // mask of last vector
 
@@ -389,7 +407,7 @@ public:
         // maxVal is used to avoid exp(x) = inf
         float maxVal = std::numeric_limits<float>::lowest();
         __m512 vmax = _mm512_set1_ps(maxVal);
-        __m512 vfactor = _mm512_set1_ps(ctx->attFactor);
+        __m512 vfactor = _mm512_set1_ps(scale);
 
         int i = 0;
         for (i = 0; i < vecs; ++i) {
@@ -428,7 +446,7 @@ public:
 
     // compute silu on the left half and then add it with the right half
     template <typename T1, typename T2>
-    static void siluSum(hpj::Matrix<T1> &src, hpj::Matrix<T2> &dst) {
+    static void siluSum(xft::Matrix<T1> &src, xft::Matrix<T2> &dst) {
         __m512 one = _mm512_set1_ps(1.f);
         __m512 negOne = _mm512_set1_ps(-1.f);
         int M = src.Rows();
@@ -447,6 +465,36 @@ public:
                 auto x1 = _mm512_add_ps(one, x0);
                 auto x2 = _mm512_div_ps(left, x1);
                 auto res = _mm512_mul_ps(right, x2);
+                xft::store_avx512(dst.Data() + i * ldd + j, mask, res);
+            }
+        }
+    }
+
+    // compute gelu on the left half and then add it with the right half
+    template <typename T1, typename T2>
+    static void geluSum(xft::Matrix<T1> &src, xft::Matrix<T2> &dst) {
+        const __m512 c1 = _mm512_set1_ps(0.044715f);
+        const __m512 c2 = _mm512_set1_ps(0.7978845608f);
+        const __m512 vone = _mm512_set1_ps(1.0f);
+        const __m512 vtwo = _mm512_set1_ps(2.0f);
+        const __m512 vhalf = _mm512_set1_ps(0.5f);
+        const int M = src.Rows();
+        const int stride = src.Cols();
+        const int N = stride / 2;
+        const int ldd = dst.Stride();
+
+#pragma omp parallel for collapse(2)
+        for (int64_t i = 0; i < M; ++i) {
+            for (int64_t j = 0; j < N; j += 16) {
+                int remain = N - j;
+                __mmask16 mask = (remain >= 16 ? 0xffff : (1 << remain) - 1);
+                auto vx = xft::load_avx512(mask, src.Data() + i * stride + j);
+                auto right = xft::load_avx512(mask, src.Data() + i * stride + j + N);
+                __m512 vt = c2 * (vx + c1 * vx * vx * vx);
+                vt = BertUtil::vexp(vt * vtwo);
+                vt = vone - vtwo * _mm512_rcp14_ps(vt + vone); // tanh
+                __m512 vy = vx * (vone + vt) * vhalf;
+                auto res = _mm512_mul_ps(right, vy);
                 xft::store_avx512(dst.Data() + i * ldd + j, mask, res);
             }
         }
@@ -484,10 +532,10 @@ public:
 
     // need to do for res.
     template <typename ImT>
-    static void softmaxTile(float *AB, ImT *ABout, float *sum, float *max, float *preSum, float *preMax, float refac,
+    static void softmaxTile(float *AB, ImT *ABout, float *sum, float *max, float *preSum, float *preMax, float scale,
             const float *attnMask, int m, int k, int attnMskStride) {
         float maxVal = std::numeric_limits<float>::lowest();
-        __m512 vrefac = _mm512_set1_ps(refac);
+        __m512 vscale = _mm512_set1_ps(scale);
         for (int i = 0; i < m; ++i) {
             float *buf = AB + i * k;
             ImT *obuf = ABout + i * k;
@@ -500,7 +548,7 @@ public:
                 __m512 vx = xft::load_avx512(mask, buf + off);
                 __m512 vmask = xft::load_avx512(mask, attnMsk + off);
 
-                vmax = _mm512_mask_max_ps(vmax, mask, vmax, vx * vrefac + vmask);
+                vmax = _mm512_mask_max_ps(vmax, mask, vmax, vx * vscale + vmask);
             }
             float _max = _mm512_reduce_max_ps(vmax);
 
@@ -518,7 +566,7 @@ public:
 
                 __m512 vx = xft::load_avx512(mask, buf + off);
                 __m512 vmask = xft::load_avx512(mask, attnMsk + off);
-                vx = BertUtil::vexp(vx * vrefac + vmask - vmax);
+                vx = BertUtil::vexp(vx * vscale + vmask - vmax);
 
                 xft::store_avx512(obuf + off, mask, vx);
 
@@ -540,6 +588,135 @@ public:
 
                 xft::store_avx512(obuf + off, mask, vx);
             }
+        }
+    }
+
+    template <typename ImT>
+    static void alibiSoftmax(ImT *buf, float scale, float headSlope, int elements) {
+        float maxVal = std::numeric_limits<float>::lowest();
+        __m512 vpos = _mm512_set_ps(15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0);
+        __m512 vmax = _mm512_set1_ps(maxVal);
+        __m512 vscale = _mm512_set1_ps(scale);
+        for (int off = 0; off < elements; off += 16) {
+            int remain = elements - off;
+            __mmask16 mask = (remain >= 16 ? 0xffff : (1 << remain) - 1);
+            __m512 vx = xft::load_avx512(mask, buf + off);
+            // compute avx512 var vmask that is pos * alibiSlopes[hidx]
+            __m512 vpositions = _mm512_add_ps(vpos, _mm512_set1_ps(off));
+            __m512 vmask = _mm512_mul_ps(vpositions, _mm512_set1_ps(headSlope));
+            vmax = _mm512_mask_max_ps(vmax, mask, vmax, vx * vscale + vmask);
+        }
+        float _max = _mm512_reduce_max_ps(vmax);
+
+        // exp and get sum
+        __m512 vsum = _mm512_set1_ps(0);
+        vmax = _mm512_set1_ps(_max);
+        for (int off = 0; off < elements; off += 16) {
+            int remain = elements - off;
+            __mmask16 mask = (remain >= 16 ? 0xffff : (1 << remain) - 1);
+
+            __m512 vx = xft::load_avx512(mask, buf + off);
+            // compute avx512 var vmask that is pos * alibiSlopes[hidx]
+            __m512 vpositions = _mm512_add_ps(vpos, _mm512_set1_ps(off));
+            __m512 vmask = _mm512_mul_ps(vpositions, _mm512_set1_ps(headSlope));
+            vx = BertUtil::vexp(vx * vscale + vmask - vmax);
+
+            xft::store_avx512(buf + off, mask, vx);
+
+            vsum = _mm512_mask_add_ps(vsum, mask, vsum, vx);
+        }
+        float _sum = _mm512_reduce_add_ps(vsum);
+
+        // Compute exp/sum(exp) and store
+        __m512 vrsum = _mm512_set1_ps(1.0f / _sum);
+        for (int off = 0; off < elements; off += 16) {
+            int remain = elements - off;
+            __mmask16 mask = (remain >= 16 ? 0xffff : (1 << remain) - 1);
+
+            __m512 vx = xft::load_avx512(mask, buf + off);
+            vx = vx * vrsum;
+
+            xft::store_avx512(buf + off, mask, vx);
+        }
+    }
+
+    template <typename ImT>
+    static void softmaxTileCausal(float *AB, ImT *ABout, float *sum, float *max, float *preSum, float *preMax,
+            float scale, float headSlope, int qLoc, int kLoc, int tRows, int tCols) {
+        // build-in mask softmax computing
+        float maxVal = std::numeric_limits<float>::lowest();
+        __m512 vscale = _mm512_set1_ps(scale);
+
+        __m512 vpos = _mm512_set_ps(15, 14, 13, 12, 11, 10, 9, 8, 7, 6, 5, 4, 3, 2, 1, 0);
+        vpos = _mm512_add_ps(vpos, _mm512_set1_ps(kLoc));
+
+        for (int i = 0; i < tRows; ++i) {
+            float *buf = AB + i * tCols;
+            ImT *obuf = ABout + i * tCols;
+            int k = qLoc + i + 1 - kLoc;
+            k = std::max(k, 0);
+            k = std::min(k, tCols);
+            // max val for avoiding inf and nan
+            __m512 vmax = _mm512_set1_ps(maxVal);
+            for (int off = 0; off < k; off += 16) {
+                int remain = k - off;
+                __mmask16 mask = (remain >= 16 ? 0xffff : (1 << remain) - 1);
+                __m512 vx = xft::load_avx512(mask, buf + off);
+
+                if (headSlope != 0) {
+                    // compute avx512 var vmask that is pos * alibiSlopes[hidx]
+                    __m512 vpositions = _mm512_add_ps(vpos, _mm512_set1_ps(off));
+                    __m512 vmask = _mm512_mul_ps(vpositions, _mm512_set1_ps(headSlope));
+                    vmax = _mm512_mask_max_ps(vmax, mask, vmax, vx * vscale + vmask);
+                } else {
+                    vmax = _mm512_mask_max_ps(vmax, mask, vmax, vx * vscale);
+                }
+            }
+            float _max = _mm512_reduce_max_ps(vmax);
+
+            _max = _max > max[i] ? _max : max[i];
+            __m512 merr = _mm512_set1_ps(max[i] - _max);
+            merr = BertUtil::vexp(merr);
+            max[i] = _max;
+
+            // exp and get sum
+            __m512 vsum = _mm512_set1_ps(0);
+            vmax = _mm512_set1_ps(_max);
+            for (int off = 0; off < k; off += 16) {
+                int remain = k - off;
+                __mmask16 mask = (remain >= 16 ? 0xffff : (1 << remain) - 1);
+
+                __m512 vx = xft::load_avx512(mask, buf + off);
+                if (headSlope != 0) {
+                    // compute avx512 var vmask that is pos * alibiSlopes[hidx]
+                    __m512 vpositions = _mm512_add_ps(vpos, _mm512_set1_ps(off));
+                    __m512 vmask = _mm512_mul_ps(vpositions, _mm512_set1_ps(headSlope));
+                    vx = BertUtil::vexp(vx * vscale + vmask - vmax);
+                } else {
+                    vx = BertUtil::vexp(vx * vscale - vmax);
+                }
+
+                xft::store_avx512(obuf + off, mask, vx);
+
+                vsum = _mm512_mask_add_ps(vsum, mask, vsum, vx);
+            }
+            float _sum = _mm512_reduce_add_ps(vsum);
+            float fac = _mm512_cvtss_f32(merr);
+            sum[i] = sum[i] * fac + _sum;
+            _sum = sum[i];
+
+            // Compute exp/sum(exp) and store
+            __m512 vrsum = _mm512_set1_ps(1.0f / _sum);
+            for (int off = 0; off < k; off += 16) {
+                int remain = k - off;
+                __mmask16 mask = (remain >= 16 ? 0xffff : (1 << remain) - 1);
+
+                __m512 vx = xft::load_avx512(mask, obuf + off);
+                vx = vx * vrsum;
+
+                xft::store_avx512(obuf + off, mask, vx);
+            }
+            if (tCols > k) { memset(obuf + k, 0, (tCols - k) * sizeof(ImT)); }
         }
     }
 
@@ -571,13 +748,34 @@ public:
     // preSum = sum
     template <typename T, typename ImT>
     static void incrementalTileAttention(const T *A, const T *B, const T *C, const float *attnMask, int m, int n, int k,
-            int attnMskStride, float *preSum, float *sum, float *preMax, float *max, float refac, float *AB,
+            int attnMskStride, float *preSum, float *sum, float *preMax, float *max, float scale, float *AB,
             float *expABC, ImT *output, int qStride, int kStride, int vStride, int stride) {
         sgemm(A, B, AB, m, k, n, qStride, kStride, k, false, true);
         // TODO:optimize
-	softmaxTile(AB, (T *)AB, sum, max, preSum, preMax, refac, attnMask, m, k, attnMskStride);
+        softmaxTile(AB, (T *)AB, sum, max, preSum, preMax, scale, attnMask, m, k, attnMskStride);
 
         sgemm((T *)AB, C, expABC, m, n, k, k, vStride, n, false, false);
         updateOutTile(output, expABC, preSum, sum, preMax, max, m, n, stride);
+    }
+
+    template <typename T, typename ImT>
+    static void incrementalTileAttentionCausal(const T *A, const T *B, const T *C, float headSlope, int srcLoc,
+            int tgtLoc, int m, int n, int k, float *preSum, float *sum, float *preMax, float *max, float scale,
+            float *AB, float *expABC, ImT *output, int qStride, int kStride, int vStride, int stride) {
+        sgemm(A, B, AB, m, k, n, qStride, kStride, k, false, true);
+        // TODO:optimize
+        softmaxTileCausal(AB, (T *)AB, sum, max, preSum, preMax, scale, headSlope, srcLoc, tgtLoc, m, k);
+
+        sgemm((T *)AB, C, expABC, m, n, k, k, vStride, n, false, false);
+        updateOutTile(output, expABC, preSum, sum, preMax, max, m, n, stride);
+    }
+
+    static bool skipMskAttn(const float *attnMask, int m, int n, int stride) {
+        float lowest = std::numeric_limits<float>::lowest();
+        // left bottom is lowest
+        if (attnMask[(m - 1) * stride] == lowest)
+            return true;
+        else
+            return false;
     }
 };

@@ -1,4 +1,4 @@
-// Copyright (c) 2023 Intel Corporation
+// Copyright (c) 2023-2024 Intel Corporation
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -16,11 +16,13 @@
 #include <limits>
 
 #include "INIReader.h"
+#include "allocator.h"
 #include "chatglm.h"
 
-template <typename WeiT>
-ChatGLM<WeiT>::ChatGLM(const std::string &modelPath)
-    : CommonDecoder<ChatGlmAttention<WeiT, RotaryEmbedding2D, LayerNorm>, ChatGlmMLP<WeiT>>(modelPath, "chatglm") {
+template <typename WeiT, typename KVCacheT>
+ChatGLM<WeiT, KVCacheT>::ChatGLM(const std::string &modelPath)
+    : CommonDecoder<ChatGlmAttention<WeiT, RotaryEmbedding2D, LayerNorm>, ChatGlmMLP<WeiT>, KVCacheT>(
+            modelPath, "chatglm") {
     std::string configPath = modelPath + "/config.ini";
     INIReader reader = INIReader(configPath);
 
@@ -41,20 +43,20 @@ ChatGLM<WeiT>::ChatGLM(const std::string &modelPath)
     setFinalLnWeight(modelPath);
 }
 
-template <typename WeiT>
-ChatGLM<WeiT>::~ChatGLM() {
+template <typename WeiT, typename KVCacheT>
+ChatGLM<WeiT, KVCacheT>::~ChatGLM() {
     delete embedding;
 
     if (positionIds) { free(positionIds); }
 }
 
-template <typename WeiT>
-void ChatGLM<WeiT>::setEmbeddingWeights(const std::string &modelPath) {
+template <typename WeiT, typename KVCacheT>
+void ChatGLM<WeiT, KVCacheT>::setEmbeddingWeights(const std::string &modelPath) {
     embedding->setWeights(modelPath + "/model.wte.bin");
 }
 
-template <typename WeiT>
-void ChatGLM<WeiT>::setFinalLnWeight(const std::string &modelPath) {
+template <typename WeiT, typename KVCacheT>
+void ChatGLM<WeiT, KVCacheT>::setFinalLnWeight(const std::string &modelPath) {
     finalLN.setWeight(modelPath + "/model.final_layernorm.weight.bin", modelPath + "/model.final_layernorm.bias.bin",
             embedding->getHiddenSize());
 }
@@ -72,8 +74,8 @@ void ChatGLM<WeiT>::setFinalLnWeight(const std::string &modelPath) {
 //     attention_mask = (attention_mask < 0.5).bool()
 //
 //     return attention_mask
-template <typename WeiT>
-void ChatGLM<WeiT>::prepareAttnMask(int *ids, int step) {
+template <typename WeiT, typename KVCacheT>
+void ChatGLM<WeiT, KVCacheT>::prepareAttnMask(int *ids, int step) {
     DecoderContext *ctx = this->getContext();
     int seqLen = ctx->inputSeqLen;
 
@@ -101,19 +103,19 @@ void ChatGLM<WeiT>::prepareAttnMask(int *ids, int step) {
     }
 }
 
-template <typename WeiT>
-void ChatGLM<WeiT>::embeddingForward(int *ids, float *output, int batchSize, int seqLen) {
-    embedding->forward(ids, output, batchSize, seqLen);
+template <typename WeiT, typename KVCacheT>
+void ChatGLM<WeiT, KVCacheT>::embeddingForward(int *ids, float *output, int tokenSize) {
+    embedding->forward(ids, output, tokenSize);
 }
 
-template <typename WeiT>
-void ChatGLM<WeiT>::lastLayerNormForward(float *input, float *output, int rows) {
+template <typename WeiT, typename KVCacheT>
+void ChatGLM<WeiT, KVCacheT>::lastLayerNormForward(float *input, float *output, int rows) {
     finalLN.forward(input, output, rows);
 }
 
 // Return the position_ids + block_position_ids
-template <typename WeiT>
-int *ChatGLM<WeiT>::getPositionIds(int *ids, int batchSize, int seqLen, int step) {
+template <typename WeiT, typename KVCacheT>
+int *ChatGLM<WeiT, KVCacheT>::getPositionIds(int *ids, int batchSize, int seqLen, int step) {
     if (step == 0) {
         maskPositions.clear();
         lastBlockPositions.clear();
@@ -145,7 +147,7 @@ int *ChatGLM<WeiT>::getPositionIds(int *ids, int batchSize, int seqLen, int step
         if (posBufSize < sizeNeeded) {
             if (positionIds) { free(positionIds); }
             posBufSize = sizeNeeded + 8; // whatever, a little bigger
-            positionIds = (int *)aligned_alloc(64, posBufSize * sizeof(int));
+            positionIds = (int *)xft::alloc(posBufSize * sizeof(int));
         }
 
         // position_ids = torch.arange(seq_length, dtype=torch.long, device=device).unsqueeze(0).repeat(batch_size, 1)
@@ -209,16 +211,10 @@ int *ChatGLM<WeiT>::getPositionIds(int *ids, int batchSize, int seqLen, int step
     return positionIds;
 }
 
-template <typename WeiT>
-void ChatGLM<WeiT>::setPrefix(int *ids, int seqLen) {
+template <typename WeiT, typename KVCacheT>
+void ChatGLM<WeiT, KVCacheT>::setPrefix(int *ids, int seqLen) {
     printf("[ERROR] ChatGLM doesn't support prefix sharing.\n");
     exit(-1);
 }
 
-template class ChatGLM<float>;
-template class ChatGLM<float16_t>;
-template class ChatGLM<bfloat16_t>;
-template class ChatGLM<int8_t>;
-template class ChatGLM<w8a8_t>;
-template class ChatGLM<uint4x2_t>;
-template class ChatGLM<nf4x2_t>;
+IMPLEMENT_MODEL(ChatGLM, chatglm)

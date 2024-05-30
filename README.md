@@ -1,5 +1,10 @@
 # xFasterTransformer
 
+<p align="center">
+  <a href="./README.md">English</a> |
+  <a href="./README_CN.md">简体中文</a>
+</p>
+
 xFasterTransformer is an exceptionally optimized solution for large language models (LLM) on the X86 platform, which is similar to FasterTransformer on the GPU platform. xFasterTransformer is able to operate in distributed mode across multiple sockets and nodes to support inference on larger models. Additionally, it provides both C++ and Python APIs, spanning from high-level to low-level interfaces, making it easy to adopt and integrate.
 
 ## Table of Contents
@@ -49,10 +54,16 @@ xFasterTransformer provides a series of APIs, both of C++ and Python, for end us
 |      ChatGLM3      | &#10004;  | &#10004; |   &#10004;   |
 |       Llama        | &#10004;  | &#10004; |   &#10004;   |
 |       Llama2       | &#10004;  | &#10004; |   &#10004;   |
+|       Llama3       | &#10004;  | &#10004; |   &#10004;   |
 |      Baichuan      | &#10004;  | &#10004; |   &#10004;   |
 |        QWen        | &#10004;  | &#10004; |   &#10004;   |
+|        QWen2       | &#10004;  | &#10004; |   &#10004;   |
 | SecLLM(YaRN-Llama) | &#10004;  | &#10004; |   &#10004;   |
 |        Opt         | &#10004;  | &#10004; |   &#10004;   |
+|   Deepseek-coder   | &#10004;  | &#10004; |   &#10004;   |
+|      gemma         | &#10004;  | &#10004; |   &#10004;   |
+|     gemma-1.1      | &#10004;  | &#10004; |   &#10004;   |
+|     codegemma      | &#10004;  | &#10004; |   &#10004;   |
 
 ### DataType support list
 
@@ -108,6 +119,14 @@ docker run -it \
   pip install torch --index-url https://download.pytorch.org/whl/cpu
   ```
 
+- For GPU, xFT needs ABI=1 from [torch==2.0.1+cpu.cxx11.abi](https://download.pytorch.org/whl/cpu-cxx11-abi/torch-2.0.1%2Bcpu.cxx11.abi-cp38-cp38-linux_x86_64.whl#sha256=fbe35a5c60aef0c4b5463caab10ba905bdfa07d6d16b7be5d510225c966a0b46) in [torch-whl-list](https://download.pytorch.org/whl/torch/) due to DPC++ need ABI=1.
+
+##### Install dependent libraries
+
+Please install libnuma package:
+- CentOS: yum install libnuma-devel
+- Ubuntu: apt-get install libnuma-dev
+
 ##### How to build
 - Using 'CMake'
   ```bash
@@ -141,12 +160,16 @@ xFasterTransformer supports a different model format from Huggingface, but it's 
     
     Supported model convert list:
     - LlamaConvert
+    - YiConvert
+    - GemmaConvert
     - ChatGLMConvert
     - ChatGLM2Convert
     - ChatGLM3Convert
     - OPTConvert
     - BaichuanConvert
     - QwenConvert
+    - Qwen2Convert
+    - DeepseekConvert
 
 ## API usage
 For more details, please see API document and [examples](examples/README.md).

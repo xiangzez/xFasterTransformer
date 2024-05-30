@@ -258,6 +258,15 @@ private:
     const char **vocab_list = vocab_qwen;
 };
 
+class GemmaTokenizer : public TokenizerBase {
+public:
+    GemmaTokenizer(std::string &tokenPath) : TokenizerBase(tokenPath) {
+        vocabSize = 256000;
+        prefixTokenIds = {2, 2, 106, 1645, 108};
+        suffixTokenIds = {107, 108, 106, 2516, 108};
+    }
+};
+
 TokenizerBase *getTokenizer(std::string &modeltype, std::string &tokenPath) {
     if (modeltype == "gpt") {
         return new OptTokenizer(tokenPath);
@@ -273,6 +282,8 @@ TokenizerBase *getTokenizer(std::string &modeltype, std::string &tokenPath) {
         return new ChatGLM2Tokenizer(tokenPath);
     } else if (modeltype == "qwen") {
         return new QwenTokenizer(tokenPath);
+    } else if (modeltype == "gemma") {
+        return new GemmaTokenizer(tokenPath);
     } else {
         std::cout << "[Error] Token list of loaded model is unsupported yet.\n" << std::endl;
         exit(-1);
@@ -285,6 +296,9 @@ std::map<std::string, xft::DataType> dataTypeMap = {{"fp16", xft::DataType::fp16
         {"bf16_w8a8", xft::DataType::bf16_w8a8}, {"bf16_int4", xft::DataType::bf16_int4},
         {"bf16_nf4", xft::DataType::bf16_nf4}, {"w8a8_int8", xft::DataType::w8a8_int8},
         {"w8a8_int4", xft::DataType::w8a8_int4}, {"w8a8_nf4", xft::DataType::w8a8_nf4}};
+
+std::map<std::string, xft::DataType> KVCacheDataTypeMap
+        = {{"fp16", xft::DataType::fp16}, {"int8", xft::DataType::int8}};
 
 std::string getModelType(std::string &modelPath) {
     std::string configPath = modelPath + "/config.ini";
@@ -305,8 +319,9 @@ int main(int argc, char **argv) {
     args.add<std::string>("input", 'i', "input prompt, invalid for Opt model.", false,
             "Once upon a time, there existed a little girl who liked to have adventures.");
     args.add<std::string>("dtype", 'd', "weight data type", false, "fp16");
+    args.add<std::string>("kv_cache_dtype", '\0', "kv cache data type", false, "fp16");
     args.add<int>("input_len", 'l', "input token size", false, -1);
-    args.add<int>("output_len", '\0', "max tokens can generate excluded input.", false, 100, cmdline::range(1, 8192));
+    args.add<int>("output_len", 'o', "max tokens can generate excluded input.", false, 100, cmdline::range(1, 8192));
     args.add<int>("prefix_len", '\0', "shared prefix tokens num.", false, 0);
     args.add<int>("num_beams", 'n', "number of beam size.", false, 1, cmdline::range(1, 32));
     args.add<int>("batch_size", 'b', "batch size.", false, 1, cmdline::range(1, 512));
@@ -327,12 +342,22 @@ int main(int argc, char **argv) {
 
     std::string dtype_name = args.get<std::string>("dtype");
     xft::DataType dtype = xft::DataType::fp16;
+    std::string kv_cache_dtype_name = args.get<std::string>("kv_cache_dtype");
+    xft::DataType KVCacheDataType = xft::DataType::fp16;
 
     auto it = dataTypeMap.find(dtype_name);
     if (it != dataTypeMap.end()) {
         dtype = it->second;
     } else {
         std::cout << "[Error] Unsupport dtype index: " << dtype_name << std::endl;
+        return 0;
+    }
+
+    it = KVCacheDataTypeMap.find(kv_cache_dtype_name);
+    if (it != KVCacheDataTypeMap.end()) {
+        KVCacheDataType = it->second;
+    } else {
+        std::cout << "[Error] Unsupport KV cache dtype index: " << kv_cache_dtype_name << std::endl;
         return 0;
     }
 
@@ -353,8 +378,8 @@ int main(int argc, char **argv) {
     std::string inputPrompt = args.get<std::string>("input");
     std::vector<int> input = tokenizer->encode(inputPrompt);
 
-    xft::AutoModel model(modelPath, dtype);
-    bool isMaster = (model.getRank() == 0);
+    xft::AutoModel model(modelPath, dtype, KVCacheDataType);
+    bool isMaster = model.isMaster();
     int secondIdCount = 0;
 
     // Need longer prompt
@@ -390,6 +415,7 @@ int main(int argc, char **argv) {
         std::cout << "[INFO] Model path is " << modelPath << std::endl;
         std::cout << "[INFO] Token path is " << tokenPath << std::endl;
         std::cout << "[INFO] Data type is " << dtype_name << std::endl;
+        std::cout << "[INFO] KV cache data type is " << kv_cache_dtype_name << std::endl;
         std::cout << "[INFO] inputSize is " << inputSize << std::endl;
         std::cout << "[INFO] outputLen is " << outputLen << std::endl;
         std::cout << "[INFO] num_beams is " << numBeams << std::endl;
@@ -418,11 +444,20 @@ int main(int argc, char **argv) {
 
     for (int i = 0; i < loop; ++i) {
         secondIdCount = 0;
+
+        // TODO: Deprecated this old path
         model.config(/*maxLen*/ maxLen, /*numBeams*/ numBeams, /*numBeamHypsToKeep*/ 1, /*lenPenalty*/ 1.0,
                 /*doEarlyStopping*/ false, /*eosTokenId*/ -1, /*padTokenId*/ -1,
                 /*doSample*/ doSample, /*temperature*/ temperature,
                 /*topK*/ topK, /*topP*/ topP, /*repetitionPenalty*/ repetitionPenalty);
         model.input(input, batchSize);
+
+        // New path
+        // model.set_input(input, batchSize, /*maxLen*/ maxLen, /*numBeams*/ numBeams, /*numBeamHypsToKeep*/ 1,
+        //         /*lenPenalty*/ 1.0,
+        //         /*doEarlyStopping*/ false, /*eosTokenId*/ -1, /*padTokenId*/ -1,
+        //         /*doSample*/ doSample, /*temperature*/ temperature,
+        //         /*topK*/ topK, /*topP*/ topP, /*repetitionPenalty*/ repetitionPenalty);
 
         std::vector<int> firstIds;
         std::vector<int> secondIds;

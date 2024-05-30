@@ -15,7 +15,9 @@
 #pragma once
 #include "abstract_decoder.h"
 #include "abstract_searcher.h"
+#include "messenger.h"
 #include "timeline.h"
+#include "transformer_ctx.h"
 
 class GreedySearch : public AbstractSearcher {
 public:
@@ -45,6 +47,7 @@ private:
     std::vector<std::vector<int>> cachedRepetVec;
     std::vector<int> doneBatch;
 
+    bool enabledBackgroundSync;
     int batchSize;
     int step;
     int curLen;

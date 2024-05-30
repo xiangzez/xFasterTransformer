@@ -14,6 +14,7 @@
 // ============================================================================
 #include "rope_2d.h"
 
+#include "allocator.h"
 #include "compile_util.h"
 #include "float16.h"
 
@@ -53,8 +54,8 @@ RotaryEmbedding2D::RotaryEmbedding2D(const int _dim, const int max_position_embe
 };
 
 void RotaryEmbedding2D::prepareEmbedding() {
-    emb_cos = (float *)aligned_alloc(64, max_seq_len_cached * (inv_freq_size * 2) * sizeof(float));
-    emb_sin = (float *)aligned_alloc(64, max_seq_len_cached * (inv_freq_size * 2) * sizeof(float));
+    emb_cos = (float *)xft::alloc(max_seq_len_cached * (inv_freq_size * 2) * sizeof(float));
+    emb_sin = (float *)xft::alloc(max_seq_len_cached * (inv_freq_size * 2) * sizeof(float));
 
 #pragma omp parallel for
     for (size_t i = 0; i < max_seq_len_cached; i++) {
@@ -183,4 +184,10 @@ void RotaryEmbedding2D::forward(
             block_position_ids += seq_len * 2;
         } // end bs
     } // end head
+}
+
+void RotaryEmbedding2D::forward(
+        float *query, float *key, int totSeqLen, int qStride, int kStride, int qHeads, int kHeads, int *positionIds) {
+    printf("Unsupported RotaryEmbedding2D in cb mode!\n");
+    exit(1);
 }

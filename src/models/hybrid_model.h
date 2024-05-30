@@ -15,21 +15,24 @@
 #pragma once
 #include <vector>
 #include "abstract_decoder.h"
+#include "messenger.h"
 #include "numa_allocator.h"
+#include "transformer_ctx.h"
 #include <type_traits>
 
-template <template <typename> class Model, typename FirstTokenDtype, typename NextTokenDtype>
+template <template <typename, typename> class Model, typename FirstTokenDtype, typename NextTokenDtype,
+        typename KVCacheDtype>
 class HybridModel : public AbstractDecoder {
 public:
     HybridModel(const std::string &modelPath) {
         // The weight location configured in "FIRST_TOKEN_WEIGHT_LOCATION" and "NEXT_TOKEN_WEIGHT_LOCATION"
         int firstNode = getenv("FIRST_TOKEN_WEIGHT_LOCATION") ? atoi(getenv("FIRST_TOKEN_WEIGHT_LOCATION")) : -1;
         xft_set_preferred_node(firstNode);
-        firstModel = new Model<FirstTokenDtype>(modelPath);
+        firstModel = new Model<FirstTokenDtype, KVCacheDtype>(modelPath);
 
         int nextNode = getenv("NEXT_TOKEN_WEIGHT_LOCATION") ? atoi(getenv("NEXT_TOKEN_WEIGHT_LOCATION")) : -1;
         xft_set_preferred_node(nextNode);
-        nextModel = new Model<NextTokenDtype>(modelPath);
+        nextModel = new Model<NextTokenDtype, KVCacheDtype>(modelPath);
 
         // Reset
         xft_set_preferred_node(-1);
@@ -56,8 +59,8 @@ public:
                 nextModel->setSharedResources(firstModel->getSharedResources());
 
                 // Models like ChatGLM need to get prepared for some token information from prompt IDs
-                if constexpr (std::is_invocable_v<decltype(&Model<NextTokenDtype>::getPositionIds),
-                                      Model<NextTokenDtype>, int *, int, int, int>) {
+                if constexpr (std::is_invocable_v<decltype(&Model<NextTokenDtype, KVCacheDtype>::getPositionIds),
+                                      Model<NextTokenDtype, KVCacheDtype>, int *, int, int, int>) {
                     nextModel->getPositionIds(promptIds.data(), firstStepBS, firstStepSeqLen, 0);
                 }
 
@@ -69,11 +72,19 @@ public:
         }
     }
 
+    // TODO
+    std::tuple<float *, int, int> forward(std::vector<xft::SequenceMeta *> &seq, bool logits_all = false) {
+        throw std::logic_error("Method not implemented");
+        return std::make_tuple(nullptr, 0, 0);
+    }
+
     void reorderCache(int *idx, int size) { return firstModel->reorderCache(idx, size); }
 
     DecoderContext *getContext() { return firstModel->getContext(); }
 
     Messenger &getMessenger() { return firstModel->getMessenger(); }
+
+    bool isMaster() { return firstModel->isMaster(); }
 
     int getRank() { return firstModel->getRank(); }
 
@@ -84,8 +95,8 @@ public:
     void unsetPrefix() { firstModel->unsetPrefix(); }
 
 private:
-    Model<FirstTokenDtype> *firstModel;
-    Model<NextTokenDtype> *nextModel;
+    Model<FirstTokenDtype, KVCacheDtype> *firstModel;
+    Model<NextTokenDtype, KVCacheDtype> *nextModel;
 
     std::vector<int> promptIds;
     int firstStepBS;

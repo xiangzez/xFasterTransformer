@@ -14,6 +14,7 @@
 // ============================================================================
 #include "rotary_embedding_chatglm2.h"
 
+#include "allocator.h"
 #include "compile_util.h"
 
 static int max_seq_len_cached = -1;
@@ -45,8 +46,8 @@ ChatGLM2RotaryEmbedding::ChatGLM2RotaryEmbedding(const int dim, const int max_po
 };
 
 void ChatGLM2RotaryEmbedding::glm2CalEmb() {
-    emb_cos = (float *)aligned_alloc(64, max_seq_len_cached * (inv_freq_size * 2) * sizeof(float));
-    emb_sin = (float *)aligned_alloc(64, max_seq_len_cached * (inv_freq_size * 2) * sizeof(float));
+    emb_cos = (float *)xft::alloc(max_seq_len_cached * (inv_freq_size * 2) * sizeof(float));
+    emb_sin = (float *)xft::alloc(max_seq_len_cached * (inv_freq_size * 2) * sizeof(float));
 
 #pragma omp parallel for
     for (size_t i = 0; i < max_seq_len_cached; i++) {
@@ -86,43 +87,13 @@ void ChatGLM2RotaryEmbedding::glm2CalEmb() {
 //     x_out2 = x_out2.flatten(3)
 //     return torch.cat((x_out2, x_pass), dim=-1)
 
-void ChatGLM2RotaryEmbedding::forward(float *buf, int bufStride, int batch_size, int seq_len, int qk_size,
-        int hidden_size_per_attention_head, const int *position_ids) {
-    int dim = inv_freq_size * 2;
-    REQUIRES(dim == hidden_size_per_attention_head, "Incorrect shape, last dimention is not the head size.");
-
-    const int half = inv_freq_size;
-
-#pragma omp parallel for
-    for (int head = 0; head < qk_size / hidden_size_per_attention_head; ++head) {
-        int off = head * dim;
-        for (int bs = 0; bs < batch_size; ++bs) {
-            for (int seq = 0; seq < seq_len; ++seq) {
-                float *p1 = buf + off;
-
-                int pos = position_ids[seq];
-                float *pcos = emb_cos + pos * dim;
-                float *psin = emb_sin + pos * dim;
-
-#pragma omp simd
-                for (int i = 0; i < half; i += 2) {
-                    auto t1 = p1[i];
-                    p1[i] = p1[i] * pcos[i] - p1[i + 1] * psin[i];
-                    p1[i + 1] = p1[i + 1] * pcos[i] + t1 * psin[i];
-                }
-                off += bufStride;
-            }
-        }
-    }
-}
-
 void ChatGLM2RotaryEmbedding::forward(
         float *query, float *key, int qStride, int kStride, const int *qk_shape, const int *position_ids) {
     int dim = inv_freq_size * 2;
     REQUIRES(dim == qk_shape[3], "Incorrect shape, last dimention is not the head size.");
     const int batch_size = qk_shape[0];
     const int seq_len = qk_shape[1];
-    const int head_num = qk_shape[2] +  qk_shape[4];
+    const int head_num = qk_shape[2] + qk_shape[4];
     const int half = inv_freq_size;
 
 #pragma omp parallel for
@@ -148,3 +119,33 @@ void ChatGLM2RotaryEmbedding::forward(
     }
 }
 
+void ChatGLM2RotaryEmbedding::forward(
+        bfloat16_t *query, bfloat16_t *key, int qStride, int kStride, const int *qk_shape, const int *position_ids) {
+    xft::chatglm2ApplyRotaryPosEmbeding(
+            query, key, qStride, kStride, emb_cos, emb_sin, inv_freq_size, qk_shape, position_ids);
+}
+
+void ChatGLM2RotaryEmbedding::forward(
+        float16_t *query, float16_t *key, int qStride, int kStride, const int *qk_shape, const int *position_ids) {
+    xft::chatglm2ApplyRotaryPosEmbeding(
+            query, key, qStride, kStride, emb_cos, emb_sin, inv_freq_size, qk_shape, position_ids);
+}
+
+// For continuous batching
+void ChatGLM2RotaryEmbedding::forward(
+        float *query, float *key, int totSeqLen, int qStride, int kStride, int qHeads, int kHeads, int *positionIds) {
+    printf("Unsupported ChatGLM2RotaryEmbedding in cb mode !\n");
+    exit(1);
+}
+
+void ChatGLM2RotaryEmbedding::forward(bfloat16_t *query, bfloat16_t *key, int totSeqLen, int qStride, int kStride,
+        int qHeads, int kHeads, int *positionIds) {
+    printf("Unsupported ChatGLM2RotaryEmbedding in cb mode !\n");
+    exit(1);
+}
+
+void ChatGLM2RotaryEmbedding::forward(float16_t *query, float16_t *key, int totSeqLen, int qStride, int kStride,
+        int qHeads, int kHeads, int *positionIds) {
+    printf("Unsupported ChatGLM2RotaryEmbedding in cb mode !\n");
+    exit(1);
+}

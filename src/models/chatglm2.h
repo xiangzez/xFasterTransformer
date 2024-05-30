@@ -1,4 +1,4 @@
-// Copyright (c) 2023 Intel Corporation
+// Copyright (c) 2023-2024 Intel Corporation
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -22,16 +22,22 @@
 #include "rotary_embedding_chatglm2.h"
 #include "token_embedding.h"
 
-template <typename WeiT>
-class ChatGLM2 : public CommonDecoder<Attention<WeiT, ChatGLM2RotaryEmbedding, RmsNorm, float, float, float, true>,
-                         ChatGLM2MLP<WeiT, float, float, float, RmsNorm, true>> {
+template <typename WeiT, typename KVCacheT>
+class ChatGLM2
+    : public CommonDecoder<Attention<WeiT, ChatGLM2RotaryEmbedding, RmsNorm, typename TypeSelector<WeiT>::InType,
+                                   typename TypeSelector<WeiT>::ImType, typename TypeSelector<WeiT>::OutType, true>,
+              ChatGLM2MLP<WeiT, typename TypeSelector<WeiT>::InType, typename TypeSelector<WeiT>::ImType,
+                      typename TypeSelector<WeiT>::OutType, RmsNorm, true>,
+              KVCacheT> {
 public:
     ChatGLM2(const std::string &modelPath, const std::string &modelType = "chatglm2");
     ~ChatGLM2();
 
     virtual void prepareAttnMask(int *ids, int step);
-    virtual void embeddingForward(int *ids, float *output, int batchSize, int seqLen);
+    virtual void embeddingForward(int *ids, float *output, int tokenSize);
+    virtual void embeddingForward(int *ids, bfloat16_t *output, int tokenSize);
     virtual void lastLayerNormForward(float *input, float *output, int rows);
+    virtual void lastLayerNormForward(bfloat16_t *input, bfloat16_t *output, int rows);
     virtual int *getPositionIds(int *ids, int batchSize, int seqLen, int step) override;
 
 private:
@@ -52,3 +58,5 @@ private:
     int *positionIds;
     int posBufSize;
 };
+
+REGISTER_MODEL(ChatGLM2, chatglm2)

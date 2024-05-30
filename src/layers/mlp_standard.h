@@ -37,7 +37,7 @@ public:
         int intermediateSize = ctx->intermediateSize;
 
         // Vertically split intermediate(FC1) weight
-        hpj::Matrix<WeiT> quantizedIntermediateWeight;
+        xft::Matrix<WeiT> quantizedIntermediateWeight;
         ctx->mmHelper->convertWeight(ctx, trans, hiddenSize, intermediateSize, _imWeight, _imScale, _imZero, true,
                 quantizedIntermediateWeight, intermediateWeightScale, intermediateWeightZero, intermediateWeightSum);
         ctx->mmHelper->packWeight(trans, quantizedIntermediateWeight, intermediateWeight);
@@ -49,7 +49,7 @@ public:
         memcpy(intermediateBias.Data(), _imBias + colsPerSplit * ctx->splitIdx, sizeof(float) * colsPerSplit);
 
         // Horizontally split the output(FC2) weight
-        hpj::Matrix<WeiT> quantizedOutputWeight;
+        xft::Matrix<WeiT> quantizedOutputWeight;
         ctx->mmHelper->convertWeight(ctx, trans, intermediateSize, hiddenSize, _outputWeight, _outputScale, _outputZero, false,
                 quantizedOutputWeight, outputWeightScale, outputWeightZero, outputWeightSum);
         ctx->mmHelper->packWeight(trans, quantizedOutputWeight, outputWeight);
@@ -76,10 +76,11 @@ public:
 #endif
 
     // Forward for FFN (Feed Forward Network)
-    void forward(DecoderContext *ctx, float *input, float *output, int iStride, int oStride, bool doLnBefore) {
+    void forward(DecoderContext *ctx, float *input, float *output, int iStride, int oStride, bool doLnBefore,
+            int totInSeqLen = 0) {
         TimeLine t("StandardMLP");
-        int M = ctx->batchSize * ctx->inputSeqLen;
-        hpj::Matrix<float> outBuffer(output, M, ctx->hiddenSize, ctx->hiddenSize);
+        int M = totInSeqLen == 0 ? ctx->batchSize * ctx->inputSeqLen : totInSeqLen;
+        xft::Matrix<float> outBuffer(output, M, ctx->hiddenSize, ctx->hiddenSize);
 
         auto &resultBuffer1 = outBuffer;
         auto &resultBuffer2 = ctx->tmpBuf;
@@ -163,14 +164,14 @@ public:
     }
 
 protected:
-    void intermediate_relu(DecoderContext *ctx, hpj::Matrix<float> &input, hpj::Matrix<float> &output) {
+    void intermediate_relu(DecoderContext *ctx, xft::Matrix<float> &input, xft::Matrix<float> &output) {
         ctx->mmHelper->compute_biasadd_relu(false, input.Rows(), output.Cols(), input.Cols(), 1.0f, input.Data(),
                 input.Stride(), intermediateWeight.Data(), intermediateWeightScale.Data(),
                 intermediateWeightZero.Data(), intermediateWeightSum.Data(), 0.0f, output.Data(), output.Stride(),
                 intermediateBias.Data());
     }
 
-    void intermediate_gelu(DecoderContext *ctx, hpj::Matrix<float> &input, hpj::Matrix<float> &output) {
+    void intermediate_gelu(DecoderContext *ctx, xft::Matrix<float> &input, xft::Matrix<float> &output) {
         ctx->mmHelper->compute(false, input.Rows(), output.Cols(), input.Cols(), 1.0f, input.Data(), input.Stride(),
                 intermediateWeight.Data(), intermediateWeightScale.Data(), intermediateWeightZero.Data(),
                 intermediateWeightSum.Data(), 0.0f, output.Data(), output.Stride());
@@ -194,11 +195,11 @@ protected:
             //     pout[j] = ctx->erf_buffer[tid][j] * 0.5f * (1 + pout[j]);
             // }
             float *pout = output.Row(i);
-            __m512 c1 = _mm512_set1_ps(0.044715f);
-            __m512 c2 = _mm512_set1_ps(factor);
-            __m512 vone = _mm512_set1_ps(1);
-            __m512 vtwo = _mm512_set1_ps(2);
-            __m512 vhalf = _mm512_set1_ps(0.5f);
+            const __m512 c1 = _mm512_set1_ps(0.044715f);
+            const __m512 c2 = _mm512_set1_ps(factor);
+            const __m512 vone = _mm512_set1_ps(1);
+            const __m512 vtwo = _mm512_set1_ps(2);
+            const __m512 vhalf = _mm512_set1_ps(0.5f);
 
             for (int off = 0; off < output.Cols(); off += 16) {
                 int remain = output.Cols() - off;
@@ -223,20 +224,20 @@ protected:
     }
 
     //    private:
-    hpj::Matrix<WeiT> intermediateWeight;
-    hpj::Vector<float> intermediateWeightScale;
-    hpj::Vector<float> intermediateWeightZero;
-    hpj::Vector<float> intermediateWeightSum;
-    hpj::Vector<float> intermediateBias;
+    xft::Matrix<WeiT> intermediateWeight;
+    xft::Vector<float> intermediateWeightScale;
+    xft::Vector<float> intermediateWeightZero;
+    xft::Vector<float> intermediateWeightSum;
+    xft::Vector<float> intermediateBias;
 
-    hpj::Matrix<WeiT> outputWeight;
-    hpj::Vector<float> outputWeightScale;
-    hpj::Vector<float> outputWeightZero;
-    hpj::Vector<float> outputWeightSum;
-    hpj::Vector<float> outputBias;
+    xft::Matrix<WeiT> outputWeight;
+    xft::Vector<float> outputWeightScale;
+    xft::Vector<float> outputWeightZero;
+    xft::Vector<float> outputWeightSum;
+    xft::Vector<float> outputBias;
 
     // layerNorm param
-    hpj::Vector<float> gamma2, beta2;
+    xft::Vector<float> gamma2, beta2;
 
 #ifdef DEBUG
     Debugger dbg;

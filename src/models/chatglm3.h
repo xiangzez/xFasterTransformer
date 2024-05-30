@@ -1,4 +1,4 @@
-// Copyright (c) 2023 Intel Corporation
+// Copyright (c) 2023-2024 Intel Corporation
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,16 +17,10 @@
 #include "chatglm2.h"
 
 // ChatGLM3 and ChatGLM2 have the same structure, so ChatGLM3 utilizes the implementation of ChatGLM2.
-template <typename WeiT>
-class ChatGLM3 : public ChatGLM2<WeiT> {
+template <typename WeiT, typename KVCacheT>
+class ChatGLM3 : public ChatGLM2<WeiT, KVCacheT> {
 public:
-    ChatGLM3(const std::string &modelPath) : ChatGLM2<WeiT>(modelPath, "chatglm3") {}
+    ChatGLM3(const std::string &modelPath) : ChatGLM2<WeiT, KVCacheT>(modelPath, "chatglm3") {}
 };
 
-template class ChatGLM3<float>;
-template class ChatGLM3<float16_t>;
-template class ChatGLM3<bfloat16_t>;
-template class ChatGLM3<int8_t>;
-template class ChatGLM3<w8a8_t>;
-template class ChatGLM3<uint4x2_t>;
-template class ChatGLM3<nf4x2_t>;
+REGISTER_MODEL(ChatGLM3, chatglm3)

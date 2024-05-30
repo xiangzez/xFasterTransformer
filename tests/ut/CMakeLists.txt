@@ -46,22 +46,21 @@ foreach(src ${sources})
         add_executable(messenger_test ${src} ${SRC_DIR}/utils/shm_reduction.cpp)
     elseif(${executable} STREQUAL "shm_test")
         add_executable(shm_test ${src} ${SRC_DIR}/utils/shm_reduction.cpp)
-    elseif(${executable} STREQUAL "kv_reorder_test")
-        add_executable(kv_reorder_test
+    elseif(${executable} STREQUAL "token_embedding_test")
+        add_executable(token_embedding_test
                        ${src}
                        ${SRC_DIR}/layers/layer_norm.cpp
                        ${SRC_DIR}/models/opt_decoder.cpp
                        ${SRC_DIR}/models/kvcache_manager.cpp
                        ${SRC_DIR}/utils/numa_allocator.cpp
                        ${SRC_DIR}/utils/shm_reduction.cpp
-                       ${SRC_DIR}/kernels/gemm_kernel_ext.cpp)
-    elseif(${executable} STREQUAL "beam_search_test")
-        add_executable(beam_search_test
+                       ${SRC_DIR}/kernels/token_embedding_kernels.cpp)
+    elseif(${executable} STREQUAL "kv_reorder_test")
+        add_executable(kv_reorder_test
                        ${src}
                        ${SRC_DIR}/layers/layer_norm.cpp
                        ${SRC_DIR}/models/opt_decoder.cpp
                        ${SRC_DIR}/models/kvcache_manager.cpp
-                       ${SRC_DIR}/searchers/beam_search.cpp
                        ${SRC_DIR}/utils/numa_allocator.cpp
                        ${SRC_DIR}/utils/shm_reduction.cpp
                        ${SRC_DIR}/kernels/gemm_kernel_ext.cpp)
@@ -76,12 +75,15 @@ foreach(src ${sources})
             continue()
         endif()
         add_executable(timeline_test ${src})
+    elseif(${executable} STREQUAL "repetition_penalty_test")
+        add_executable(repetition_penalty_test ${src} ${SRC_DIR}/searchers/search_utils.cpp)
     else()
         add_executable(${executable} ${src})
     endif()
 
     target_link_libraries(${executable} PRIVATE ${GTEST_LIBRARIES})
     target_link_libraries(${executable} PRIVATE ccl)
+    target_link_libraries(${executable} PUBLIC gtest)
     target_link_libraries(${executable} PUBLIC rt)
     target_link_libraries(${executable} PUBLIC m)
     target_link_libraries(${executable} PUBLIC dl)
@@ -92,7 +94,7 @@ foreach(src ${sources})
     target_link_libraries(${executable} PUBLIC xfastertransformer)
 
     # List of executable names and their corresponding libraries
-    set(executables_need_gemm kv_reorder_test beam_search_test small_gemm_test)
+    set(executables_need_gemm kv_reorder_test small_gemm_test)
 
     # Gemm libraries needed for all executables
     foreach(name ${executables_need_gemm})

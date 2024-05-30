@@ -1,4 +1,4 @@
-// Copyright (c) 2023 Intel Corporation
+// Copyright (c) 2023-2024 Intel Corporation
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -28,14 +28,15 @@
 #include "opt_embedding.h"
 #include "transformer_ctx.h"
 
-template <typename WeiT>
-class OptDecoder : public CommonDecoder<Attention<WeiT, QKPO_Dummy, LayerNorm>, MLP<WeiT>> {
+template <typename WeiT, typename KVCacheT>
+class OptDecoder : public CommonDecoder<Attention<WeiT, QKPO_Dummy, LayerNorm>, MLP<WeiT>, KVCacheT> {
 public:
     OptDecoder(const std::string &modelPath);
     ~OptDecoder();
 
     void prepareAttnMask(int *ids, int step);
-    void embeddingForward(int *ids, float *output, int batchSize, int seqLen);
+    void embeddingForward(int *ids, float *output, int tokenSize);
+    void embeddingForward(float *output, const std::vector<SequenceMeta *> &sequences);
     void lastLayerNormForward(float *input, float *output, int rows);
 
 private:
@@ -46,3 +47,5 @@ private:
     OptEmbedding<float16_t> *embedding;
     LayerNorm finalLN;
 };
+
+REGISTER_MODEL(OptDecoder, gpt)

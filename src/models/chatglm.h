@@ -1,4 +1,4 @@
-// Copyright (c) 2023 Intel Corporation
+// Copyright (c) 2023-2024 Intel Corporation
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -22,14 +22,14 @@
 #include "rope_2d.h"
 #include "token_embedding.h"
 
-template <typename WeiT>
-class ChatGLM : public CommonDecoder<ChatGlmAttention<WeiT, RotaryEmbedding2D, LayerNorm>, ChatGlmMLP<WeiT>> {
+template <typename WeiT, typename KVCacheT>
+class ChatGLM : public CommonDecoder<ChatGlmAttention<WeiT, RotaryEmbedding2D, LayerNorm>, ChatGlmMLP<WeiT>, KVCacheT> {
 public:
     ChatGLM(const std::string &modelPath);
     ~ChatGLM();
 
     void prepareAttnMask(int *ids, int step);
-    void embeddingForward(int *ids, float *output, int batchSize, int seqLen);
+    void embeddingForward(int *ids, float *output, int tokenSize);
     void lastLayerNormForward(float *input, float *output, int rows);
     int *getPositionIds(int *ids, int batchSize, int seqLen, int step) override;
     void setPrefix(int *ids, int seqLen) override;
@@ -65,3 +65,5 @@ private:
     int *positionIds;
     int posBufSize;
 };
+
+REGISTER_MODEL(ChatGLM, chatglm)

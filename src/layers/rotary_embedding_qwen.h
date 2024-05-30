@@ -20,6 +20,8 @@
 #include <unordered_map>
 
 #include "bfloat16.h"
+#include "float16.h"
+#include "rotary_embedding_kernels.h"
 
 /*  Sample:
         int bs = 2 headnum = 3 seq = 4  dim = 6;
@@ -40,11 +42,19 @@ public:
     ~QwenRotaryEmbedding();
 
     void forward(float *query, float *key, int qStride, int kStride, const int *qkShape, const int *positionIds);
-
     void forward(
             bfloat16_t *query, bfloat16_t *key, int qStride, int kStride, const int *qkShape, const int *positionIds);
+    void forward(
+            float16_t *query, float16_t *key, int qStride, int kStride, const int *qkShape, const int *positionIds);
 
-    void init_logn(const int max_length = 2048);
+    void forward(float *query, float *key, int totSeqLen, int qStride, int kStride, int qHeads, int kHeads,
+            int *positionIds);
+    void forward(bfloat16_t *query, bfloat16_t *key, int totSeqLen, int qStride, int kStride, int qHeads, int kHeads,
+            int *positionIds);
+    void forward(float16_t *query, float16_t *key, int totSeqLen, int qStride, int kStride, int qHeads, int kHeads,
+            int *positionIds);
+
+    void init_logn(int max_length = 2048, bool use_logn = true, bool use_ntk = true);
 
 private:
     float getNewBaseValue(const int true_seq_len, const int max_seq_length = -1);
@@ -58,4 +68,5 @@ private:
     int dim = 0;
     float base_initial = 10000.0;
     float base = 10000.0;
+    bool use_ntk = true;
 };

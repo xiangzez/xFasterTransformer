@@ -14,84 +14,82 @@
 // ============================================================================
 #include "rotary_embedding.h"
 
+#include "allocator.h"
 #include "compile_util.h"
 
-static int max_seq_len_cached = -1;
-static int inv_freq_size = -1;
-static float *inv_freq;
-static float *emb_cos = nullptr;
-static float *emb_sin = nullptr;
+LlamaRotaryEmbedding::LlamaRotaryEmbedding(DecoderContext *ctx) {
+    const std::string inv_freq_str = "inv_freq";
+    const std::string emb_cos_str = "emb_cos";
+    const std::string emb_sin_str = "emb_sin";
 
-bool LlamaRotaryEmbedding::initialized = false;
+    this->dim = ctx->attHeadSize;
+    this->max_position_embeddings = ctx->maxPosEmbed;
+    ctx->GetAttr("rope_theta", &this->base, 10000);
+    ctx->GetAttr("rope_type", &this->rope_type, std::to_string(-1));
 
-// dim: equals to head size
-LlamaRotaryEmbedding::LlamaRotaryEmbedding(const int dim, const int max_position_embeddings, const float base) {
-    if (!initialized) {
-        initialized = true;
+    if (this->rope_type == "linear") ctx->GetAttr("scaling_factor", &this->scaling_factor, 1.0f);
 
-        max_seq_len_cached = max_position_embeddings;
-        inv_freq_size = (dim + 1) / 2;
-        inv_freq = (float *)malloc(inv_freq_size * sizeof(float));
+    inv_freq_size = (dim + 1) / 2;
+
+    emb_cos = ctx->getBuffer<float>(emb_cos_str, max_position_embeddings * inv_freq_size);
+    emb_sin = ctx->getBuffer<float>(emb_sin_str, max_position_embeddings * inv_freq_size);
+
+    if (!ctx->cached(inv_freq_str)) {
+        inv_freq = ctx->getBuffer<float>(inv_freq_str, inv_freq_size);
+
         for (size_t i = 0; i < inv_freq_size; i++) {
             inv_freq[i] = 1.0 / pow(base, float(i * 2) / dim);
+            inv_freq[i] /= this->scaling_factor;
         }
-
-        llamaCalEmb();
+        xft::llamaSetCosSinCache(inv_freq, emb_cos, emb_sin, inv_freq_size, max_position_embeddings);
     } else if (dim != inv_freq_size * 2) {
         printf("Incorrect dim=%d, inv_freq_size=%d\n", dim, inv_freq_size);
         exit(-1);
     }
-};
-
-void LlamaRotaryEmbedding::llamaCalEmb() {
-    emb_cos = (float *)aligned_alloc(64, max_seq_len_cached * (inv_freq_size * 2) * sizeof(float));
-    emb_sin = (float *)aligned_alloc(64, max_seq_len_cached * (inv_freq_size * 2) * sizeof(float));
-
-#pragma omp parallel for
-    for (size_t i = 0; i < max_seq_len_cached; i++) {
-        float *pcos = emb_cos + i * inv_freq_size * 2;
-        float *psin = emb_sin + i * inv_freq_size * 2;
-
-        for (size_t j = 0; j < inv_freq_size; j++) {
-            float tmp = i * inv_freq[j];
-            float cos_tmp = std::cos(tmp);
-            float sin_tmp = std::sin(tmp);
-
-            pcos[j] = cos_tmp;
-            pcos[j + inv_freq_size] = cos_tmp;
-            psin[j] = sin_tmp;
-            psin[j + inv_freq_size] = sin_tmp;
-        }
-    }
 }
 
-// def rotate_half(x):
-//     """Rotates half the hidden dims of the input."""
-//     x1 = x[..., : x.shape[-1] // 2]
-//     x2 = x[..., x.shape[-1] // 2 :]
-//     return torch.cat((-x2, x1), dim=-1)
-// def apply_rotary_pos_emb(q, k, cos, sin, position_ids):
-//     # The first two dimensions of cos and sin are always 1, so we can `squeeze` them.
-//     cos = cos.squeeze(1).squeeze(0)  # [seq_len, dim]
-//     sin = sin.squeeze(1).squeeze(0)  # [seq_len, dim]
-//     cos = cos[position_ids].unsqueeze(1)  # [bs, 1, seq_len, dim]
-//     sin = sin[position_ids].unsqueeze(1)  # [bs, 1, seq_len, dim]
-//     q_embed = (q * cos) + (rotate_half(q) * sin)
-//     k_embed = (k * cos) + (rotate_half(k) * sin)
-//     return q_embed, k_embed
-//
-// qk_shape: 4 values of [batch_size, seq_len, head_num, head_size]
-// position_ids: an array in the size of seq_len
+// This API is deprecated, will delete after all rotary embed code refactor.
+LlamaRotaryEmbedding::LlamaRotaryEmbedding(const int dim, const int max_position_embeddings, const float base) {
+    this->dim = dim;
+    inv_freq_size = (dim + 1) / 2;
+
+    inv_freq = (float *)malloc(inv_freq_size * sizeof(float));
+    emb_cos = (float *)xft::alloc(max_position_embeddings * inv_freq_size * sizeof(float));
+    emb_sin = (float *)xft::alloc(max_position_embeddings * inv_freq_size * sizeof(float));
+    for (size_t i = 0; i < inv_freq_size; i++) {
+        inv_freq[i] = 1.0 / pow(base, float(i * 2) / dim);
+    }
+
+    xft::llamaSetCosSinCache(inv_freq, emb_cos, emb_sin, inv_freq_size, max_position_embeddings);
+}
+
 // query and key is the matrix like below:
 //
-// |<------------------------------ head_size * head_num --------------------------------->|
-// |_head_size|___________________________________________________________________________________
-// |          |          |          |          |          |          |          |          |    ^
-// |          |          |          |          |          |          |          |          |    |
-// |          |          |          |          |          |          |          |          | bs*seq_len
-// |          |          |          |          |          |          |          |          |    |
-// |          |          |          |          |          |          |          |          |    |
-// |__________|__________|__________|__________|__________|__________|__________|__________|____v__
+//   |<------------------------------ head_num * head_size --------------------------------->|
+//   |_head_size|_____________________________________________________________________________ _ _ _ _
+//   |          |          |          |          |          |          |          |          |     ^
+//   |          |          |          |          |          |          |          |          |     |
+//   |          |          |          |          |          |          |          |          |  bs*seq_len
+//   |          |          |          |          |          |          |          |          |     |
+//   |          |          |          |          |          |          |          |          |     |
+//   |__________|__________|__________|__________|__________|__________|__________|__________|_ _ _v_
+//
+// inv_freq:
+//    _____
+//   |_____| 1
+//  head_size/2
+//
+// emb_cos:        emb_sin:
+//    _____          _____
+//   |     |        |     |
+//   |     |        |     |
+//   |     |        |     |
+//   |     |        |     | max_position_embeddings
+//   |     |        |     |
+//   |     |        |     |
+//   |_____|        |_____|
+//  head_size/2    head_size/2
+
 void LlamaRotaryEmbedding::forward(
         float *query, float *key, int qStride, int kStride, const int *qkShape, const int *positionIds) {
     int dim = inv_freq_size * 2;
@@ -115,8 +113,8 @@ void LlamaRotaryEmbedding::forward(
         for (int bs = 0; bs < batchSize; ++bs) {
             for (int seq = 0; seq < seqLen; ++seq) {
                 int pos = positionIds[seq];
-                float *pcos = emb_cos + pos * dim;
-                float *psin = emb_sin + pos * dim;
+                float *pcos = emb_cos + pos * half;
+                float *psin = emb_sin + pos * half;
 
                 float *q = query + bs * seqLen * qStride + seq * qStride + head * dim;
                 float *k = key + bs * seqLen * kStride + seq * kStride + head * dim;
@@ -124,13 +122,13 @@ void LlamaRotaryEmbedding::forward(
                 for (int i = 0; i < half; ++i) {
                     if (head < qHeads) {
                         auto q1 = q[i];
-                        q[i] = q[i] * pcos[i] - q[i + half] * psin[i];
-                        q[i + half] = q[i + half] * pcos[i + half] + q1 * psin[i + half];
+                        q[i] = q1 * pcos[i] - q[i + half] * psin[i];
+                        q[i + half] = q[i + half] * pcos[i] + q1 * psin[i];
                     }
                     if (head < kHeads) {
                         auto k1 = k[i];
-                        k[i] = k[i] * pcos[i] - k[i + half] * psin[i];
-                        k[i + half] = k[i + half] * pcos[i + half] + k1 * psin[i + half];
+                        k[i] = k1 * pcos[i] - k[i + half] * psin[i];
+                        k[i + half] = k[i + half] * pcos[i] + k1 * psin[i];
                     }
                 }
             }
@@ -140,59 +138,29 @@ void LlamaRotaryEmbedding::forward(
 
 void LlamaRotaryEmbedding::forward(
         bfloat16_t *query, bfloat16_t *key, int qStride, int kStride, const int *qkShape, const int *positionIds) {
-    int dim = inv_freq_size * 2;
-    REQUIRES(dim == qkShape[3], "Incorrect shape, this dimention is not the head size.");
+    xft::llamaApplyRotaryPosEmbeding(query, key, qStride, kStride, emb_cos, emb_sin, inv_freq_size, qkShape, positionIds);
+}
 
-    const int batchSize = qkShape[0];
-    const int seqLen = qkShape[1];
-    const int qHeads = qkShape[2];
-    const int kHeads = qkShape[4];
-    const int heads = std::max(qHeads, kHeads);
-    const int half = inv_freq_size;
+void LlamaRotaryEmbedding::forward(
+        float16_t *query, float16_t *key, int qStride, int kStride, const int *qkShape, const int *positionIds) {
+    xft::llamaApplyRotaryPosEmbeding(query, key, qStride, kStride, emb_cos, emb_sin, inv_freq_size, qkShape, positionIds);
+}
 
-#pragma omp parallel for collapse(3)
-    for (int head = 0; head < heads; ++head) {
-        for (int bs = 0; bs < batchSize; ++bs) {
-            for (int seq = 0; seq < seqLen; ++seq) {
-                int pos = positionIds[seq];
-                float *pcos = emb_cos + pos * dim;
-                float *psin = emb_sin + pos * dim;
+// For continuous batching
+void LlamaRotaryEmbedding::forward(
+        float *query, float *key, int totSeqLen, int qStride, int kStride, int qHeads, int kHeads, int *positionIds) {
+    xft::llamaApplyRotaryPosEmbed(
+            query, key, emb_cos, emb_sin, qStride, kStride, this->dim, totSeqLen, qHeads, kHeads, positionIds);
+}
 
-                bfloat16_t *q = query + bs * seqLen * qStride + seq * qStride + head * dim;
-                bfloat16_t *k = key + bs * seqLen * kStride + seq * kStride + head * dim;
+void LlamaRotaryEmbedding::forward(bfloat16_t *query, bfloat16_t *key, int totSeqLen, int qStride, int kStride,
+        int qHeads, int kHeads, int *positionIds) {
+    xft::llamaApplyRotaryPosEmbed(
+            query, key, emb_cos, emb_sin, qStride, kStride, this->dim, totSeqLen, qHeads, kHeads, positionIds);
+}
 
-                // Process chunks of 16 elements at a time
-                for (int i = 0; i < half; i += 16) {
-                    int remain = half - i;
-                    __mmask16 mask = (remain >= 16 ? 0xffff : (1 << remain) - 1);
-
-                    __m512 pCosVec = _mm512_maskz_loadu_ps(mask, &pcos[i]);
-                    __m512 pCosHalfVec = _mm512_maskz_loadu_ps(mask, &pcos[i + half]);
-                    __m512 pSinVec = _mm512_maskz_loadu_ps(mask, &psin[i]);
-                    __m512 pSinHalfVec = _mm512_maskz_loadu_ps(mask, &psin[i + half]);
-
-                    // Compute something like:
-                    // q[i] = q[i] * pcos[i] - q[i + half] * psin[i];
-                    // q[i + half] = q[i + half] * pcos[i + half] + q[i] * psin[i + half];
-                    if (head < qHeads) {
-                        __m512 qVec = bfloat16_t::cvt_bf16_to_fp32(_mm256_maskz_loadu_epi16(mask, &q[i]));
-                        __m512 qHalfVec = bfloat16_t::cvt_bf16_to_fp32(_mm256_maskz_loadu_epi16(mask, &q[i + half]));
-                        __m512 qNew = _mm512_fmsub_ps(qVec, pCosVec, _mm512_mul_ps(qHalfVec, pSinVec));
-                        __m512 qHalfNew = _mm512_fmadd_ps(qHalfVec, pCosHalfVec, _mm512_mul_ps(qVec, pSinHalfVec));
-                        _mm256_mask_storeu_epi16(&q[i], mask, bfloat16_t::cvt_fp32_to_bf16(qNew));
-                        _mm256_mask_storeu_epi16(&q[i + half], mask, bfloat16_t::cvt_fp32_to_bf16(qHalfNew));
-                    }
-
-                    if (head < kHeads) {
-                        __m512 kVec = bfloat16_t::cvt_bf16_to_fp32(_mm256_maskz_loadu_epi16(mask, &k[i]));
-                        __m512 kHalfVec = bfloat16_t::cvt_bf16_to_fp32(_mm256_maskz_loadu_epi16(mask, &k[i + half]));
-                        __m512 kNew = _mm512_fmsub_ps(kVec, pCosVec, _mm512_mul_ps(kHalfVec, pSinVec));
-                        __m512 kHalfNew = _mm512_fmadd_ps(kHalfVec, pCosHalfVec, _mm512_mul_ps(kVec, pSinHalfVec));
-                        _mm256_mask_storeu_epi16(&k[i], mask, bfloat16_t::cvt_fp32_to_bf16(kNew));
-                        _mm256_mask_storeu_epi16(&k[i + half], mask, bfloat16_t::cvt_fp32_to_bf16(kHalfNew));
-                    }
-                }
-            }
-        }
-    }
+void LlamaRotaryEmbedding::forward(float16_t *query, float16_t *key, int totSeqLen, int qStride, int kStride,
+        int qHeads, int kHeads, int *positionIds) {
+    xft::llamaApplyRotaryPosEmbed(
+            query, key, emb_cos, emb_sin, qStride, kStride, this->dim, totSeqLen, qHeads, kHeads, positionIds);
 }

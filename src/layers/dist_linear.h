@@ -13,6 +13,7 @@
 // limitations under the License.
 // ============================================================================
 #pragma once
+#include "allocator.h"
 #include "float16.h"
 #include "matmul_helper.h"
 #include "timeline.h"
@@ -62,14 +63,14 @@ public:
         scaleWeight.Resize(N);
         zeroWeight.Resize(N);
 
-        hpj::Matrix<WeiT> quantizedWeight;
+        xft::Matrix<WeiT> quantizedWeight;
         ctx->mmHelper->convertWeight(
                 true, K, N, w + splitOffset * K, nullptr, nullptr, quantizedWeight, scaleWeight, zeroWeight, sumWeight);
         ctx->mmHelper->packWeight(true, quantizedWeight, weight);
 
         // Copy Bias
         if (b) {
-            bias = (float *)aligned_alloc(64, N * sizeof(float));
+            bias = (float *)xft::alloc(N * sizeof(float));
             memcpy(bias, b + splitOffset, N * sizeof(float));
         }
     }
@@ -107,9 +108,9 @@ private:
     int splitSize;
     int splitOffset;
 
-    hpj::Matrix<WeiT> weight;
-    hpj::Vector<float> scaleWeight; // if weight is int8
-    hpj::Vector<float> zeroWeight; // if weight is int8
-    hpj::Vector<float> sumWeight; // if weight is int8
+    xft::Matrix<WeiT> weight;
+    xft::Vector<float> scaleWeight; // if weight is int8
+    xft::Vector<float> zeroWeight; // if weight is int8
+    xft::Vector<float> sumWeight; // if weight is int8
     float *bias = nullptr;
 };

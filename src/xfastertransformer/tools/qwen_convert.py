@@ -1,4 +1,4 @@
-# Copyright (c) 2023 Intel Corporation
+# Copyright (c) 2023-2024 Intel Corporation
 #
 # Licensed under the Apache License, Version 2.0 (the "License");
 # you may not use this file except in compliance with the License.
@@ -19,10 +19,10 @@ import numpy as np
 import os
 import torch
 
-from transformers import AutoModelForCausalLM
+from transformers import AutoModelForCausalLM, AutoConfig
 from transformers.generation import GenerationConfig
 
-from .convert import BaseModelConvert
+from .convert import BaseModelConvert, get_name_and_param
 
 
 class QwenConvert(BaseModelConvert):
@@ -114,13 +114,18 @@ class QwenConvert(BaseModelConvert):
         if not os.path.exists(saved_dir):
             os.makedirs(saved_dir)
 
+        from typing import TYPE_CHECKING, Any, Callable, ContextManager, Iterator, Sequence, TypeVar, cast
+
         # load the model
         gen_config = GenerationConfig.from_pretrained(input_dir, trust_remote_code=True, resume_download=True)
-        model = AutoModelForCausalLM.from_pretrained(input_dir, device_map="auto", trust_remote_code=True)
+        hf_config, _ = AutoConfig.from_pretrained(
+            input_dir, return_unused_kwargs=True, trust_remote_code=True, fp16=True, use_flash_attn=False
+        )
 
-        hf_config = vars(model.config)
-
-        layer_names = [name for name, param in model.named_parameters()]
+        hf_config = {
+            **vars(hf_config),
+            **vars(gen_config),
+        }
 
         # save parameters to config file
         config = configparser.ConfigParser()
@@ -148,10 +153,13 @@ class QwenConvert(BaseModelConvert):
             config["qwen"]["end_id"] = str(gen_config.eos_token_id)
             config["qwen"]["pad_id"] = str(gen_config.pad_token_id)
             config["qwen"]["weight_data_type"] = dtype
+            config["qwen"]["use_logn_attn"] = str(hf_config["use_logn_attn"])
+            config["qwen"]["use_dynamic_ntk"] = str(hf_config["use_dynamic_ntk"])
             with open(os.path.join(saved_dir, "config.ini"), "w") as configfile:
                 config.write(configfile)
         except Exception as e:
             print("Fail to save the config in config.ini.", str(e))
+            exit(-1)
 
         hf_model_name_pattern = [
             "ln_1.weight",
@@ -175,32 +183,17 @@ class QwenConvert(BaseModelConvert):
             "mlp.down_proj.weight",
         ]
 
-        state_dict = model.state_dict()
-        model_named_parameters = dict()
-        for name, param in state_dict.items():
-            # merge QKV
-            if "self_attn.q_proj.weight" in name:
-                k_name = name.replace("q_proj", "k_proj")
-                v_name = name.replace("q_proj", "v_proj")
-                qkv = torch.cat(
-                    (param.permute(1, 0), state_dict[k_name].permute(1, 0), state_dict[v_name].permute(1, 0)), dim=1
-                )
-                model_named_parameters[
-                    name.replace("self_attn.q_proj.weight", "attention.query_key_value.weight")
-                ] = qkv
-            # for merged weights, skip
-            elif "self_attn.k_proj.weight" in name or "self_attn.v_proj.weight" in name:
-                continue
-            elif "embed" in name:
-                model_named_parameters[name] = param
-            elif "lm_head" in name:
-                model_named_parameters[name] = param
-            else:
-                model_named_parameters[name] = param.permute(1, 0) if len(param.shape) == 2 else param
-
         print("Processing ...")
         pool = multiprocessing.Pool(processes)
-        for name, param in model_named_parameters.items():
+        for name, param in get_name_and_param(input_dir):
+            param = param.half()
+            if "embed" in name or "lm_head" in name:
+                pass
+            else:
+                param = param.permute(1, 0) if len(param.shape) == 2 else param
+
+            # print(f"name = {name} param = {type(param)} {param.dtype} ")
+
             if name == "transformer.wte.weight":
                 if len(param.shape) == 2:
                     if param.shape[0] == hidden_size:
@@ -240,3 +233,5 @@ class QwenConvert(BaseModelConvert):
                 pool.starmap_async(self.split_and_convert_process, starmap_args)
         pool.close()
         pool.join()
+
+        print(f"{saved_dir} export successful!")

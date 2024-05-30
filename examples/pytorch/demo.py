@@ -54,14 +54,17 @@ DTYPE_LIST = [
     "w8a8_nf4",
 ]
 
+KVCACHE_DTYPE_LIST = ["fp16", "int8"]
+
 parser = argparse.ArgumentParser()
 parser.add_argument("-t", "--token_path", type=str, default="/data/chatglm-6b-hf", help="Path to token file")
 parser.add_argument("-m", "--model_path", type=str, default="/data/chatglm-6b-cpu", help="Path to model file")
 parser.add_argument("-d", "--dtype", type=str, choices=DTYPE_LIST, default="fp16", help="Data type")
+parser.add_argument("--kv_cache_dtype", type=str, choices=KVCACHE_DTYPE_LIST, default="fp16", help="KV cache dtype")
 parser.add_argument("--padding", help="Enable padding, Default to False.", type=boolean_string, default=False)
 parser.add_argument("--streaming", help="Streaming output, Default to True.", type=boolean_string, default=True)
 parser.add_argument("--num_beams", help="Num of beams, default to 1 which is greedy search.", type=int, default=1)
-parser.add_argument("--output_len", help="max tokens can generate excluded input.", type=int, default=100)
+parser.add_argument("-o", "--output_len", help="max tokens can generate excluded input.", type=int, default=100)
 parser.add_argument("--chat", help="Enable chat mode, Default to False.", type=boolean_string, default=False)
 parser.add_argument("--do_sample", help="Enable sampling search, Default to False.", type=boolean_string, default=False)
 parser.add_argument("--temperature", help="value used to modulate next token probabilities.", type=float, default=1.0)
@@ -105,9 +108,11 @@ def build_inputs_baichuan(tokenizer, query: str, padding, history: List[Tuple[st
     inputs = torch.cat((prefix, inputs, suffix), dim=1)
     return inputs
 
+
 def build_inputs_llama(tokenizer, query: str, padding, history: List[Tuple[str, str]] = []):
-    inputs = tokenizer([f"[INST] {query.strip()} [/INST]"], return_tensors="pt",padding=padding).input_ids
+    inputs = tokenizer([f"[INST] {query.strip()} [/INST]"], return_tensors="pt", padding=padding).input_ids
     return inputs
+
 
 def build_inputs_qwen(
     tokenizer: PreTrainedTokenizer,
@@ -177,6 +182,35 @@ def build_inputs_qwen(
     return torch.tensor([context_tokens])
 
 
+def build_inputs_qwen2(
+    tokenizer: PreTrainedTokenizer,
+    query: str,
+    padding,
+    history: List[Tuple[str, str]] = None,
+    system: str = "You are a helpful assistant.",
+    max_window_size: int = 6144,
+    chat_format: str = "chatml",
+):
+    if history is None:
+        history = []
+
+    _history = history + [(query, None)]
+    messages = []
+    for idx, (user_msg, model_msg) in enumerate(_history):
+        print(f"user_msg={user_msg}, model_msg={model_msg}")
+        if idx == len(_history) - 1 and not model_msg:
+            messages.append({"role": "user", "content": user_msg})
+            break
+        if user_msg:
+            messages.append({"role": "user", "content": user_msg})
+        if model_msg:
+            messages.append({"role": "model", "content": model_msg})
+
+    prompt = tokenizer.apply_chat_template(messages, add_generation_prompt=True, tokenize=False)
+    model_inputs = tokenizer.encode(prompt, add_special_tokens=True, return_tensors="pt")
+    return model_inputs
+
+
 def get_stop_words_ids_qwen(chat_format, tokenizer):
     if chat_format == "raw":
         stop_words_ids = [tokenizer.encode("Human:"), [tokenizer.eod_id]]
@@ -215,7 +249,9 @@ if __name__ == "__main__":
         check_transformers_version_compatibility(args.token_path)
         sys.exit(-1)
 
-    model = xfastertransformer.AutoModel.from_pretrained(args.model_path, dtype=args.dtype)
+    model = xfastertransformer.AutoModel.from_pretrained(
+        args.model_path, dtype=args.dtype, kv_cache_dtype=args.kv_cache_dtype
+    )
     streamer = None
     stop_words_ids = None
     if model.rank == 0 and args.streaming and args.num_beams == 1:
@@ -233,6 +269,10 @@ if __name__ == "__main__":
                 input_ids = build_inputs_chatglm(tokenizer, input_prompt, args.padding)
             elif "baichuan" in args.model_path.lower():
                 input_ids = build_inputs_baichuan(tokenizer, input_prompt, args.padding)
+            elif "qwen1.5" in args.model_path.lower() or "qwen2" in args.model_path.lower():
+                input_ids = build_inputs_qwen2(tokenizer, input_prompt, args.padding)
+                # https://huggingface.co/Qwen/Qwen1.5-0.5B-Chat/blob/main/generation_config.json#L6-L7
+                stop_words_ids = [[151643], [151645]]
             elif "qwen" in args.model_path.lower() and ("chat" in args.model_path.lower() or args.chat):
                 input_ids = build_inputs_qwen(tokenizer, input_prompt, args.padding)
                 stop_words_ids = get_stop_words_ids_qwen("chatml", tokenizer)

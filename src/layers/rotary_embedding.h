@@ -18,6 +18,9 @@
 #include <iostream>
 
 #include "bfloat16.h"
+#include "float16.h"
+#include "rotary_embedding_kernels.h"
+#include "transformer_ctx.h"
 
 /*  Sample:
         int bs = 2 headnum = 3 seq = 4  dim = 6;
@@ -33,18 +36,34 @@
 
 class LlamaRotaryEmbedding {
 public:
+    LlamaRotaryEmbedding(DecoderContext *ctx);
     LlamaRotaryEmbedding(const int dim, const int max_position_embeddings = 2048, const float base = 10000);
 
     ~LlamaRotaryEmbedding() {}
 
     void forward(float *query, float *key, int qStride, int kStride, const int *qkShape, const int *positionIds);
-
     void forward(
             bfloat16_t *query, bfloat16_t *key, int qStride, int kStride, const int *qkShape, const int *positionIds);
+    void forward(
+            float16_t *query, float16_t *key, int qStride, int kStride, const int *qkShape, const int *positionIds);
+
+    // For continuous batching
+    void forward(float *query, float *key, int totSeqLen, int qStride, int kStride, int qHeads, int kHeads,
+            int *positionIds);
+    void forward(bfloat16_t *query, bfloat16_t *key, int totSeqLen, int qStride, int kStride, int qHeads, int kHeads,
+            int *positionIds);
+    void forward(float16_t *query, float16_t *key, int totSeqLen, int qStride, int kStride, int qHeads, int kHeads,
+            int *positionIds);
 
 private:
-    void llamaCalEmb();
-
-private:
-    static bool initialized;
+    bool initialized = false;
+    int inv_freq_size = -1;
+    int dim = -1;
+    int max_position_embeddings = -1;
+    int base = -1;
+    std::string rope_type;
+    float scaling_factor = 1.0;
+    float *inv_freq = nullptr;
+    float *emb_cos = nullptr;
+    float *emb_sin = nullptr;
 };
