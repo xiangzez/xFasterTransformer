@@ -905,7 +905,7 @@ AutoModel::AutoModel(std::string modelPath, xft::DataType dataType, xft::DataTyp
     INIReader reader = INIReader(configPath);
 
     if (reader.ParseError() < 0) {
-        printf("Could not load model config.ini in %s\n", configPath.c_str());
+        printf("Could not load model config.ini.\n");
         exit(-1);
     }
     std::string modeltype = *reader.Sections().begin();

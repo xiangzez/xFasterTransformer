@@ -25,8 +25,8 @@
 #include "transpose_util.h"
 
 template <typename WeiT, typename KVCacheT>
-OptDecoder<WeiT, KVCacheT>::OptDecoder(const std::string &modelPath)
-    : CommonDecoder<Attention<WeiT, QKPO_Dummy, LayerNorm>, MLP<WeiT>, KVCacheT>(modelPath, "gpt") {
+OptDecoder<WeiT, KVCacheT>::OptDecoder(const std::string &modelPath, const std::string &modelType)
+    : CommonDecoder<Attention<WeiT, QKPO_Dummy, LayerNorm>, MLP<WeiT>, KVCacheT>(modelPath, modelType) {
     // Context
     DecoderContext *ctx = this->getContext();
 

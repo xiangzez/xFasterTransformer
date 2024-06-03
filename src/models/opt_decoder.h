@@ -31,7 +31,7 @@
 template <typename WeiT, typename KVCacheT>
 class OptDecoder : public CommonDecoder<Attention<WeiT, QKPO_Dummy, LayerNorm>, MLP<WeiT>, KVCacheT> {
 public:
-    OptDecoder(const std::string &modelPath);
+    OptDecoder(const std::string &modelPath, const std::string &modelType = "gpt");
     ~OptDecoder();
 
     void prepareAttnMask(int *ids, int step);

@@ -1,4 +1,4 @@
-// Copyright (c) 2023 Intel Corporation
+// Copyright (c) 2024 Intel Corporation
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -13,36 +13,17 @@
 // limitations under the License.
 // ============================================================================
 #pragma once
-#include <map>
-#include <string>
-#include <vector>
 
-#include "abstract_decoder.h"
-#include "attention.h"
-#include "common_decoder.h"
-#include "dist_linear.h"
-#include "float16.h"
-#include "layer_norm.h"
-#include "messenger.h"
-#include "mlp_standard.h"
-#include "opt_embedding.h"
-#include "transformer_ctx.h"
+#include "opt_decoder.h"
 
-template <typename WeiT>
-class GptNeoDecoder : public CommonDecoder<Attention<WeiT, QKPO_Dummy, LayerNorm>, MLP<WeiT>> {
+// GptNeo and Opt have the same structure, except for attFactor
+template <typename WeiT, typename KVCacheT>
+class GptNeoDecoder : public OptDecoder<WeiT, KVCacheT> {
 public:
-    GptNeoDecoder(const std::string &modelPath);
-    ~GptNeoDecoder();
-
-    void prepareAttnMask(int *ids, int step);
-    void embeddingForward(int *ids, float *output, int batchSize, int seqLen);
-    void lastLayerNormForward(float *input, float *output, int rows);
-
-private:
-    void setEmbeddingWeights(const std::string &modelPath);
-    void setFinalLnWeight(const std::string &modelPath);
-
-private:
-    OptEmbedding<float16_t> *embedding;
-    LayerNorm finalLN;
+    GptNeoDecoder(const std::string &modelPath) : OptDecoder<WeiT, KVCacheT>(modelPath, "gpt_neo") {
+        DecoderContext *ctx = this->getContext();
+        ctx->attFactor = 1;
+    }
 };
+
+REGISTER_MODEL(GptNeoDecoder, gpt_neo)
